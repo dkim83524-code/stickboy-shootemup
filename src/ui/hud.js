@@ -34,7 +34,7 @@ export class Hud {
       'hud-class', 'hud-name', 'hp-num', 'hp-fill', 'hp-ghost', 'slots', 'super', 'super-name', 'super-pct', 'super-fill',
       'extra', 'ability', 'ability-cd', 'ability-name', 'ammo', 'ammo-max', 'death', 'death-by', 'death-timer', 'scoreboard',
       'ov-damage', 'ov-cloak', 'ov-rage', 'ov-trigger', 'ov-wallhack', 'ov-drone', 'ov-scope', 'drone-time', 'drone-hp-fill',
-      'tags', 'spinbar', 'spinbar-fill',
+      'tags', 'spinbar', 'spinbar-fill', 'ov-heal',
     ]) this.el[id] = $(id);
     this.cache = new Map();
     this.hitT = 0;
@@ -83,6 +83,10 @@ export class Hud {
     this.el.dmgdir.appendChild(el);
     this.arcs.push({ el, x: srcPos.x, z: srcPos.z, t: 1.2 });
     if (this.arcs.length > 5) this.arcs.shift().el.remove();
+  }
+
+  healed(amount) {
+    this.healT = Math.min(1, (this.healT || 0) + 0.2 + amount / 80);
   }
 
   notify(text, kind = '') {
@@ -138,7 +142,7 @@ export class Hud {
         this.set('super-pct', 'text', '');
         superCls = 'active';
       } else {
-        this.set('super-name', 'text', mana >= 99.9 ? 'MANA · METEOR READY' : 'MANA');
+        this.set('super-name', 'text', mana >= 99.9 ? 'METEOR READY' : 'MANA');
         this.set('super-fill', 'width', mana.toFixed(1) + '%');
         this.set('super-pct', 'text', `${Math.floor(mana)}`);
         superCls = 'mana' + (mana >= 99.9 ? ' ready' : '');
@@ -161,7 +165,10 @@ export class Hud {
     const slots = info.spells || (info.buildMode || p.classId === 'engineer' ? info.builds : null);
     if (slots) {
       const html = slots
-        .map((s) => `<div class="slot${s.selected ? ' sel' : ''}${s.ok ? '' : ' no'}${s.built ? ' built' : ''}"><div class="n">${s.key} ${s.name}</div><div class="c">${s.cost}${info.spells ? ' mana' : ' scrap'}</div></div>`)
+        .map((s) => {
+          const sub = s.cd > 0.05 ? `${s.cd.toFixed(1)}s` : `${s.cost}${info.spells ? ' mana' : ' scrap'}`;
+          return `<div class="slot${s.selected ? ' sel' : ''}${s.ok ? '' : ' no'}${s.built ? ' built' : ''}"><div class="n">${s.key} ${s.name}</div><div class="c">${sub}</div></div>`;
+        })
         .join('');
       this.set('slots', 'html', html);
       this.set('slots', 'show', info.spells || info.buildMode ? true : false);
@@ -179,7 +186,10 @@ export class Hud {
     let extra = '';
     if (info.scrap !== undefined) extra = `SCRAP ${info.scrap}${info.buildMode ? ' · 1-3 pick · LMB place · RMB cancel' : ''}`;
     if (info.knives !== undefined) extra = `KNIVES ${'<span class="pip on"></span>'.repeat(info.knives)}${'<span class="pip"></span>'.repeat(3 - info.knives)}`;
-    if (info.cloak !== undefined) extra = `${info.cloaked ? 'CLOAKED' : 'CLOAK'} <span class="cloakbar"><i style="width:${(info.cloak * 100).toFixed(0)}%"></i></span>`;
+    if (info.cloak !== undefined) {
+      const lunge = info.lunge > 0 ? `${info.lunge.toFixed(1)}s` : 'READY';
+      extra = `RMB LUNGE ${lunge} · ${info.cloaked ? 'CLOAKED' : 'CLOAK'} <span class="cloakbar"><i style="width:${(info.cloak * 100).toFixed(0)}%"></i></span>`;
+    }
     this.set('extra', 'html', extra);
 
     // crosshair & overlays
@@ -206,6 +216,8 @@ export class Hud {
     this.hitT = Math.max(0, this.hitT - dt);
     this.set('hitmarker', 'opacity', (this.hitT > 0 ? Math.min(1, this.hitT / 0.15) : 0).toFixed(2));
     this.dmgT = Math.max(0, this.dmgT - dt * 1.5);
+    this.healT = Math.max(0, (this.healT || 0) - dt * 1.5);
+    this.set('ov-heal', 'opacity', this.healT.toFixed(2));
     this.set('ov-damage', 'opacity', (this.dmgT + (p.alive && p.hp < p.maxHp * 0.3 ? 0.35 : 0)).toFixed(2));
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       const a = this.arcs[i];

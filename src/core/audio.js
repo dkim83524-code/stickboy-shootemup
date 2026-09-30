@@ -251,6 +251,15 @@ const RECIPES = {
       d[i] = a(f, 'tri') * 0.5 * Math.exp(-(t % 0.15) * 6);
     }
   }],
+  heal: [0.6, (d, n) => {
+    const a = tone();
+    const b = tone();
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      const f = t < 0.12 ? 660 : t < 0.24 ? 880 : 1100;
+      d[i] = (a(f, 'tri') * 0.4 + b(f * 2) * 0.15) * Math.exp(-(t % 0.12) * 5) * Math.exp(-t * 2.5);
+    }
+  }],
   build: [0.35, (d, n) => {
     const a = tone();
     for (let i = 0; i < n; i++) {

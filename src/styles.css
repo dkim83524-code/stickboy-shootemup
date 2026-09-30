@@ -80,6 +80,9 @@ body {
 #ov-damage {
   background: radial-gradient(ellipse at center, transparent 45%, rgba(255, 30, 50, 0.55) 100%);
 }
+#ov-heal {
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(80, 230, 110, 0.45) 100%);
+}
 #ov-cloak {
   background: radial-gradient(ellipse at center, transparent 40%, rgba(60, 30, 120, 0.6) 100%);
 }

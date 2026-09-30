@@ -37,12 +37,12 @@ function addLights(target, shadows) {
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     const s = sun.shadow.camera;
-    s.left = -90;
-    s.right = 90;
-    s.top = 70;
-    s.bottom = -70;
+    s.left = -105;
+    s.right = 105;
+    s.top = 85;
+    s.bottom = -85;
     s.near = 10;
-    s.far = 220;
+    s.far = 260;
     sun.shadow.bias = -0.0005;
     sun.shadow.normalBias = 0.04;
   }
@@ -172,7 +172,7 @@ $('classpick-ok').addEventListener('click', () => {
   if (id !== p.classId) {
     p.pendingClass = id;
     // In the spawn room you swap immediately, like a resupply locker.
-    const inSpawn = p.alive && (p.team === 0 ? p.pos.x < -57 : p.pos.x > 57);
+    const inSpawn = p.alive && (p.team === 0 ? p.pos.x < -64 : p.pos.x > 64);
     if (inSpawn) game.spawnCharacter(p);
     else if (p.alive) hud.notify(`${CLASSES[id].name.toUpperCase()} ON RESPAWN`, 'good');
   } else p.pendingClass = null;

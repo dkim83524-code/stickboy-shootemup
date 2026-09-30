@@ -2,22 +2,27 @@ import * as THREE from 'three';
 import { Kit, cylMesh, mesh, vmArm } from './kit.js';
 import { sfx } from '../core/audio.js';
 import { addOutline, toonMat } from '../core/toon.js';
-import { clamp, DEG } from '../core/utils.js';
+import { clamp } from '../core/utils.js';
 
 export const SPELLS = [
   { id: 'bolt', name: 'Arcane Bolt', cost: 6, cd: 0.28, color: 0xc77dff },
-  { id: 'frost', name: 'Frost Shard', cost: 16, cd: 0.75, color: 0x7fe3ff },
-  { id: 'lightning', name: 'Chain Lightning', cost: 28, cd: 1.0, color: 0xfff275 },
+  { id: 'mend', name: 'Mend', cost: 25, cd: 2.5, color: 0x7cff6b },
+  { id: 'ward', name: 'Arcane Ward', cost: 35, cd: 8, color: 0x5ec8ff },
   { id: 'meteor', name: 'Meteor', cost: 100, cd: 0, color: 0xff7b00 },
 ];
 const MAX_MANA = 100;
 const CHANNEL_TIME = 3;
+const MEND_HEAL = 55;
+const WARD_RADIUS = 5.5;
+const WARD_TIME = 5;
+const WARD_DPS = 24;
+const WARD_HPS = 20;
 const _v = new THREE.Vector3();
-const _w = new THREE.Vector3();
 
 const boltGeo = new THREE.SphereGeometry(0.2, 12, 8);
-const shardGeo = new THREE.OctahedronGeometry(0.22, 0);
 const rockGeo = new THREE.IcosahedronGeometry(1.3, 0);
+const wardGeo = new THREE.SphereGeometry(1, 32, 16);
+const wardWire = new THREE.IcosahedronGeometry(1, 2);
 
 export class MageKit extends Kit {
   constructor(c) {
@@ -26,6 +31,7 @@ export class MageKit extends Kit {
     this.slot = 0;
     this.regenPause = 0;
     this.channel = null;
+    this.ward = null;
     this.castT = 9;
   }
 
@@ -33,6 +39,8 @@ export class MageKit extends Kit {
     this.mana = MAX_MANA;
     this.slot = 0;
     this.cancelChannel();
+    this.endWard();
+    this.updateWandColor();
   }
 
   get spell() {
@@ -52,12 +60,13 @@ export class MageKit extends Kit {
   }
 
   crosshair() {
-    return this.slot === 2 ? 'lightning' : this.slot === 3 ? 'meteor' : 'dot';
+    return this.slot === 3 ? 'meteor' : this.slot === 0 ? 'dot' : 'circle';
   }
 
   update(dt, inp) {
     const c = this.c;
     if (this.time > this.regenPause && !this.channel) this.mana = Math.min(MAX_MANA, this.mana + 11 * dt);
+    if (this.ward) this.updateWard(dt);
 
     if (this.channel) {
       if (c.isStunned()) {
@@ -85,25 +94,33 @@ export class MageKit extends Kit {
     this.updateWandColor();
   }
 
+  deny(pressed, msg = null) {
+    if (!pressed || !this.local) return;
+    sfx.play('deny');
+    if (msg) this.game.hud.notify(msg, 'warn');
+  }
+
   cast(pressed) {
     const s = this.spell;
+    const c = this.c;
     if (s.id === 'meteor') {
       if (pressed) this.startChannel();
       return;
     }
-    if (this.mana < s.cost) {
-      if (pressed && this.local) sfx.play('deny');
-      return;
-    }
+    if (!this.ready(s.id)) return this.deny(pressed);
+    if (this.mana < s.cost) return this.deny(pressed);
+    if (s.id === 'mend' && c.hp >= c.maxHp) return this.deny(pressed, 'ALREADY AT FULL HEALTH');
+    if (s.id === 'ward' && this.ward) return this.deny(pressed);
     this.mana -= s.cost;
     this.regenPause = this.time + 0.5;
-    this.cooldown('cast', s.cd);
+    this.cooldown('cast', s.id === 'bolt' ? s.cd : 0.35);
+    this.cooldown(s.id, s.cd);
     this.castT = 0;
-    this.c.model.triggerAttack('cast');
+    c.model.triggerAttack('cast');
     this.kick(0.4);
     if (s.id === 'bolt') this.castBolt();
-    else if (s.id === 'frost') this.castFrost();
-    else if (s.id === 'lightning') this.castLightning();
+    else if (s.id === 'mend') this.castMend();
+    else if (s.id === 'ward') this.castWard();
   }
 
   projectileMesh(geo, color) {
@@ -131,79 +148,75 @@ export class MageKit extends Kit {
     sfx.play('bolt', { pos: c.pos, volume: 0.7 });
   }
 
-  castFrost() {
+  /** Spell 2: heal yourself. */
+  castMend() {
     const c = this.c;
-    const from = this.muzzle();
-    const dir = this.convergeDir(from);
-    this.game.projectiles.spawn({
-      owner: c,
-      pos: from,
-      vel: dir.multiplyScalar(55),
-      radius: 0.24,
-      damage: 40,
-      headMult: 2,
-      weapon: 'Frost Shard',
-      slow: { amount: 0.45, time: 2.5 },
-      mesh: this.projectileMesh(shardGeo, 0x7fe3ff),
-      spin: 12,
-      trail: 0xbff4ff,
-      impactColor: 0x7fe3ff,
-    });
-    sfx.play('frost', { pos: c.pos, volume: 0.8 });
+    this.game.heal(c, MEND_HEAL, c);
+    this.game.effects.burst(c.chest(), { count: 22, color: [0x7cff6b, 0xffffff], speed: 4, size: 0.1, life: 0.7, gravity: -4 });
+    this.game.effects.ring(c.pos, { color: 0x7cff6b, radius: 1.8, life: 0.4 });
+    sfx.play('heal', { pos: c.pos, volume: 0.8 });
   }
 
-  castLightning() {
+  /** Spell 3: a force field that follows you, heals allies inside and hurts enemies inside. */
+  castWard() {
     const c = this.c;
     const g = this.game;
-    const eye = c.eye();
-    const aim = c.aim(_v).clone();
-    const from = this.muzzle();
-    // auto-target the enemy closest to the crosshair inside a small cone
-    let best = null;
-    let bestAng = 9 * DEG;
-    for (const e of g.enemiesOf(c.team)) {
-      if (e.cloaked) continue;
-      const p = e.chest();
-      const to = _w.subVectors(p, eye);
-      const d = to.length();
-      if (d > 38) continue;
-      const ang = Math.acos(clamp(to.dot(aim) / d, -1, 1));
-      if (ang < bestAng && g.world.lineOfSight(eye, p)) {
-        bestAng = ang;
-        best = e;
-      }
-    }
-    sfx.play('lightning', { pos: c.pos, volume: 0.9 });
-    if (!best) {
-      const hit = g.world.raycast(eye, aim, 38);
-      const end = hit ? hit.point : eye.clone().addScaledVector(aim, 38);
-      g.effects.lightning(from, end);
+    const group = new THREE.Group();
+    const shellMat = new THREE.MeshBasicMaterial({ color: 0x5ec8ff, transparent: true, opacity: 0.1, depthWrite: false, side: THREE.DoubleSide });
+    const wireMat = new THREE.MeshBasicMaterial({ color: 0xbff4ff, transparent: true, opacity: 0.35, wireframe: true, depthWrite: false });
+    const shell = new THREE.Mesh(wardGeo, shellMat);
+    const wire = new THREE.Mesh(wardWire, wireMat);
+    group.add(shell, wire);
+    group.scale.setScalar(WARD_RADIUS);
+    g.scene.add(group);
+    const marker = g.effects.marker(c.pos, WARD_RADIUS, 0x5ec8ff);
+    this.ward = { until: this.time + WARD_TIME, tick: 0, group, wire, shellMat, wireMat, marker };
+    g.effects.ring(c.pos, { color: 0x5ec8ff, radius: WARD_RADIUS, life: 0.4 });
+    sfx.play('cast', { pos: c.pos, volume: 0.7, rate: 1.6 });
+  }
+
+  updateWard(dt) {
+    const w = this.ward;
+    const c = this.c;
+    const g = this.game;
+    const left = w.until - this.time;
+    if (left <= 0 || !c.alive) {
+      this.endWard();
       return;
     }
-    const chain = [best];
-    const dmg = [45, 32, 22];
-    let prevPoint = from;
-    for (let i = 0; i < 3 && i < chain.length; i++) {
-      const t = chain[i];
-      const p = t.chest();
-      g.effects.lightning(prevPoint, p);
-      g.effects.burst(p, { count: 8, color: [0xfff275, 0xffffff], speed: 5, size: 0.08, life: 0.3 });
-      g.damage(t, dmg[i], c, { weapon: 'Chain Lightning', dir: aim });
-      prevPoint = p;
-      if (i < 2) {
-        let next = null;
-        let nd = 9;
-        for (const e of g.enemiesOf(c.team)) {
-          if (chain.includes(e) || !e.alive) continue;
-          const d = e.pos.distanceTo(t.pos);
-          if (d < nd && g.world.lineOfSight(p, e.chest())) {
-            nd = d;
-            next = e;
-          }
-        }
-        if (next) chain.push(next);
+    w.group.position.set(c.pos.x, c.pos.y + 0.8, c.pos.z);
+    w.marker.set(c.pos);
+    w.wire.rotation.y += dt * 0.8;
+    const fade = Math.min(1, left / 0.5) * (this.local && this.game.cameraMode === 'first' ? 0.4 : 1);
+    w.shellMat.opacity = 0.1 * fade;
+    w.wireMat.opacity = (0.28 + Math.sin(this.time * 8) * 0.07) * fade;
+    w.tick -= dt;
+    if (w.tick > 0) return;
+    w.tick = 0.25;
+    for (const o of g.characters) {
+      if (!o.alive || o === c) continue;
+      const dx = o.pos.x - c.pos.x;
+      const dz = o.pos.z - c.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d > WARD_RADIUS || Math.abs(o.pos.y - c.pos.y) > 3) continue;
+      if (o.team === c.team) {
+        if (g.heal(o, WARD_HPS * 0.25, c) > 0) g.effects.burst(o.chest(), { count: 2, color: 0x7cff6b, speed: 2, size: 0.08, life: 0.5, gravity: -3 });
+      } else {
+        const n = d > 0.01 ? _v.set(dx / d, 0, dz / d) : _v.set(1, 0, 0);
+        g.damage(o, WARD_DPS * 0.25, c, { weapon: 'Arcane Ward', dir: n.clone(), knock: n.clone().multiplyScalar(3.5).setY(1.5) });
+        g.effects.burst(o.chest(), { count: 3, color: [0x5ec8ff, 0xffffff], speed: 3, size: 0.08, life: 0.3 });
       }
     }
+  }
+
+  endWard() {
+    const w = this.ward;
+    if (!w) return;
+    this.ward = null;
+    w.group.removeFromParent();
+    w.shellMat.dispose();
+    w.wireMat.dispose();
+    w.marker.remove();
   }
 
   blink() {
@@ -337,10 +350,12 @@ export class MageKit extends Kit {
 
   onDeath() {
     this.cancelChannel(true);
+    this.endWard();
   }
 
   dispose() {
     this.cancelChannel();
+    this.endWard();
     super.dispose();
   }
 
@@ -348,7 +363,14 @@ export class MageKit extends Kit {
     return {
       mana: this.mana,
       manaMax: MAX_MANA,
-      spells: SPELLS.map((s, i) => ({ name: s.name, cost: s.cost, key: i + 1, selected: i === this.slot, ok: this.mana >= s.cost - 0.01 })),
+      spells: SPELLS.map((s, i) => ({
+        name: s.name,
+        cost: s.cost,
+        key: i + 1,
+        selected: i === this.slot,
+        cd: s.id === 'ward' && this.ward ? this.ward.until - this.time : this.cdLeft(s.id),
+        ok: this.mana >= s.cost - 0.01 && (s.id === 'meteor' || this.ready(s.id)),
+      })),
       ability: { name: 'Blink', cd: this.cdLeft('blink'), max: 1.2, cost: 22 },
       channel: this.channel ? this.channel.t / CHANNEL_TIME : null,
     };

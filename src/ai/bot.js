@@ -57,8 +57,6 @@ export class BotBrain {
     this.lastHurtAt = -99;
     this.lastHurtBy = null;
     this.wantMove = false;
-    this.spellPick = 0;
-    this.spellPickAt = 0;
   }
 
   onDamaged(attacker) {
@@ -325,6 +323,7 @@ export class BotBrain {
       this.ambush(dt);
       return;
     }
+    if (cls === 'mage' && this.mageSupport(false)) return;
 
     // chase recent intel
     if (this.lastKnown && this.time - this.lastKnownAt < 6) {
@@ -361,10 +360,12 @@ export class BotBrain {
     const c = this.c;
     const inp = c.input;
     if (this.time < this.campUntil) {
-      // stay perfectly still (looking around is allowed)
+      // crouch in the shadows (looking around is allowed)
+      this.setStalk(true);
       c.yaw += Math.sin(this.time * 0.7) * 0.004;
       return;
     }
+    this.setStalk(false);
     if (this.lastKnown && this.time - this.lastKnownAt < 8) {
       const d = this.moveTo(this.lastKnown);
       if (d < 6) {
@@ -449,46 +450,66 @@ export class BotBrain {
       return;
     }
     this.strafeAround(t, dist, [9, 26]);
-    if (this.time > this.spellPickAt) {
-      this.spellPickAt = this.time + rand(0.8, 1.6);
-      const r = Math.random();
-      if (dist < 34 && kit.mana >= 45 && r < 0.35) this.spellPick = 3;
-      else if (kit.mana >= 30 && r < 0.6) this.spellPick = 2;
-      else this.spellPick = 1;
+    const support = this.mageSupport(dist < 8);
+    const err = this.aimAt(this.aimPoint(t, { lead: 70 }));
+    if (support) return;
+    inp.slot = 1;
+    if (this.canFire(err, dist, 1.2) && kit.slot === 0) inp.fire = true;
+  }
+
+  /** Mend when hurt, Ward when enemies are close or allies nearby are hurt. Returns true if casting. */
+  mageSupport(enemyClose) {
+    const c = this.c;
+    const inp = c.input;
+    const kit = c.kit;
+    let pick = 0;
+    if (c.hp < c.maxHp * 0.55 && kit.mana >= 25 && kit.ready('mend')) pick = 2;
+    else if (!kit.ward && kit.mana >= 35 && kit.ready('ward')) {
+      const alliesHurt = this.game.characters.some(
+        (o) => o.alive && o !== c && o.team === c.team && o.hp < o.maxHp * 0.7 && o.pos.distanceTo(c.pos) < 5,
+      );
+      if (enemyClose || alliesHurt) pick = 3;
     }
-    if (kit.mana < SPELL_COST[this.spellPick]) this.spellPick = 1;
-    inp.slot = this.spellPick;
-    const lead = this.spellPick === 3 ? 0 : this.spellPick === 2 ? 55 : 70;
-    const err = this.aimAt(this.aimPoint(t, { lead }));
-    if (this.canFire(err, dist, this.spellPick === 3 ? 4 : 1.2) && kit.slot === this.spellPick - 1) inp.fire = true;
+    if (!pick) return false;
+    inp.slot = pick;
+    if (kit.slot === pick - 1) inp.fire = inp.firePressed = true;
+    return true;
+  }
+
+  /** Stalk is a toggle on E; press it only when the state needs to change. */
+  setStalk(on) {
+    const kit = this.c.kit;
+    if (kit.stalking !== on && this.time > (this.stalkToggleAt || 0)) {
+      this.c.input.abilityPressed = true;
+      this.stalkToggleAt = this.time + 0.3;
+    }
   }
 
   fightAssassin(t, dist) {
     const c = this.c;
     const inp = c.input;
     const kit = c.kit;
-    if (c.superCharge >= 100 && dist < 25) inp.superPressed = true;
-    const behind = kit.isBehind(t);
-    const theyFaceAway = behind || t.forward(_f).dot(_w.set(c.pos.x - t.pos.x, 0, c.pos.z - t.pos.z).normalize()) < 0.1;
-    const seen = this.time - this.lastHurtAt < 1.5;
-    const aggressive = c.superActive || seen || dist < 3.2 || (theyFaceAway && dist < 16);
+    if (c.superCharge >= 100 && !c.superActive && Math.random() < 0.1) inp.superPressed = true;
     const err = this.aimAt(this.aimPoint(t));
-    if (!aggressive && (c.cloaked || !seen)) {
-      // hold still and wait for them to walk past
+    const behind = kit.isBehind(t);
+    const spotted = this.time - this.lastHurtAt < 1.5;
+    if (c.superActive || spotted || dist < 2) {
+      // brawl: stand up, close in, slash, lunge
+      this.setStalk(false);
+      if (dist > 2.3) this.moveTo(t.pos, { face: false });
+      else this.strafeAround(t, dist, [1.2, 2.4], 0.6);
+      if (dist > 3 && dist < 7 && kit.ready('lunge') && err < 12 * DEG) inp.altPressed = true;
+      if (dist < 2.8 && err < 30 * DEG && this.time >= this.reactUntil) inp.fire = true;
       return;
     }
-    if (dist > 2.3) {
-      if (theyFaceAway || c.superActive) {
-        // circle to their back
-        const back = t.forward(new THREE.Vector3()).multiplyScalar(-1.6).add(t.pos);
-        this.moveTo(back, { face: false });
-      } else this.moveTo(t.pos, { face: false });
-      if (dist < 7 && dist > 3.5 && kit.ready('dash') && Math.random() < 0.08) inp.abilityPressed = true;
-      if (!theyFaceAway && dist < 6 && c.grounded && Math.random() < this.d.jumpy * 0.1) inp.jumpPressed = true;
-    } else {
-      this.strafeAround(t, dist, [1.2, 2.4], 0.6);
+    // stalk: crouch, cloak, and creep around to their back
+    this.setStalk(true);
+    const back = t.forward(new THREE.Vector3()).multiplyScalar(-1.5).add(t.pos);
+    this.moveTo(behind ? t.pos : back, { face: false });
+    if (behind && c.cloaked && this.time >= this.reactUntil) {
+      if (dist < 2.7 && err < 30 * DEG) inp.fire = true;
+      else if (dist < 6.5 && kit.ready('lunge') && err < 10 * DEG) inp.altPressed = true;
     }
-    if (dist < 2.8 && err < 30 * DEG && this.time >= this.reactUntil) inp.fire = true;
   }
 
   fightSniper(t, dist) {
@@ -617,4 +638,3 @@ export class BotBrain {
   }
 }
 
-const SPELL_COST = { 1: 6, 2: 16, 3: 28, 4: 100 };

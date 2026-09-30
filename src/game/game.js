@@ -11,7 +11,8 @@ import { BotBrain } from '../ai/bot.js';
 import { sfx } from '../core/audio.js';
 import { clamp, shuffle, lerp, damp, rand } from '../core/utils.js';
 
-export const SCORE_LIMIT = 30;
+export const TEAM_SIZE = 5;
+export const SCORE_LIMIT = 40;
 export const MATCH_TIME = 8 * 60;
 
 const _v = new THREE.Vector3();
@@ -68,7 +69,7 @@ export class Game {
       if (o.isMesh) o.castShadow = true;
     });
     this.scene.add(s.root);
-    this.world.boxes.push({ minX: -0.45, minY: 1.8, minZ: -0.45, maxX: 0.45, maxY: 6.2, maxZ: 0.45 });
+    this.world.addStatic({ minX: -0.45, minY: 1.8, minZ: -0.45, maxX: 0.45, maxY: 6.2, maxZ: 0.45 });
   }
 
   // ---------------------------------------------------------------- match flow
@@ -88,8 +89,9 @@ export class Game {
     this.player = player;
     this.viewer = player;
     this.characters.push(player);
-    const blue = shuffle(CLASS_ORDER.filter((c) => c !== playerClass)).slice(0, 3);
-    const red = shuffle([...CLASS_ORDER]).slice(0, 4);
+    // 5v5: you + 4 bots vs 5 bots, no repeated class within a team
+    const blue = shuffle(CLASS_ORDER.filter((c) => c !== playerClass)).slice(0, TEAM_SIZE - 1);
+    const red = shuffle([...CLASS_ORDER]).slice(0, TEAM_SIZE);
     for (const [team, list] of [[0, blue], [1, red]]) {
       for (const cls of list) {
         const bot = new Character(this, { name: names.pop(), team, classId: cls });
@@ -376,6 +378,17 @@ export class Game {
     }
     if (killed) this.kill(target, attacker, info);
     return dealt;
+  }
+
+  /** Restore health (capped). Returns the amount actually healed. */
+  heal(target, amount, healer = null) {
+    if (!target || !target.alive || !target.isCharacter) return 0;
+    const healed = Math.min(amount, target.maxHp - target.hp);
+    if (healed <= 0) return 0;
+    target.hp += healed;
+    if (healer) healer.healingDone = (healer.healingDone || 0) + healed;
+    if (target === this.player && healer !== target) this.hud.healed(healed);
+    return healed;
   }
 
   kill(victim, killer, info) {

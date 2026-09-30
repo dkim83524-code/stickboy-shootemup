@@ -60,6 +60,8 @@ export class Character {
     this.radius = 0.36;
     this.height = 1.85;
     this.eyeHeight = 1.6;
+    this.crouched = false;
+    this.crouchT = 0; // smoothed 0..1 for camera, hitboxes and the model
     this.grounded = false;
     this.alive = false;
     this.hp = 0;
@@ -133,6 +135,10 @@ export class Character {
     this.protectUntil = this.time + 2;
     this.lastDamageTime = -99;
     this.cloaked = false;
+    this.crouched = false;
+    this.crouchT = 0;
+    this.height = 1.85;
+    this.eyeHeight = 1.6;
     this.grounded = true;
     this.lastAttacker = null;
     this.kit.cds = {};
@@ -152,11 +158,11 @@ export class Character {
   }
 
   headCenter(out = new THREE.Vector3()) {
-    return out.set(this.pos.x, this.pos.y + 1.62, this.pos.z);
+    return out.set(this.pos.x, this.pos.y + 1.62 - 0.52 * this.crouchT, this.pos.z);
   }
 
   chest(out = new THREE.Vector3()) {
-    return out.set(this.pos.x, this.pos.y + 1.15, this.pos.z);
+    return out.set(this.pos.x, this.pos.y + 1.15 - 0.38 * this.crouchT, this.pos.z);
   }
 
   /** Yaw the body faces (differs from the look yaw while piloting a drone). */
@@ -180,7 +186,7 @@ export class Character {
     _box.minZ = this.pos.z - r;
     _box.maxZ = this.pos.z + r;
     _box.minY = this.pos.y - inflate;
-    _box.maxY = this.pos.y + 1.4;
+    _box.maxY = this.pos.y + 1.4 - 0.45 * this.crouchT;
     const bt = rayBox(o.x, o.y, o.z, d.x, d.y, d.z, _box, best ? best.t : maxT);
     if (bt && (!best || bt.t < best.t)) best = { t: bt.t, head: false };
     return best;
@@ -236,6 +242,9 @@ export class Character {
       this.addSuper(this.kit.passiveCharge * dt);
     }
 
+    this.crouchT = Math.max(0, Math.min(1, this.crouchT + (this.crouched ? dt : -dt) * 7));
+    this.height = this.crouched ? 1.25 : 1.85;
+    this.eyeHeight = 1.6 - 0.55 * this.crouchT;
     this.updateMovement(dt, inp);
 
     if (this.time - this.lastDamageTime > 5 && this.hp < this.maxHp) {
@@ -408,7 +417,7 @@ export class Character {
     m.root.rotation.y = facing;
     const hs = Math.hypot(this.vel.x, this.vel.z);
     m.pose = this.kit.pose();
-    m.animate(dt, { speed: this.grounded ? hs : 0, grounded: this.grounded, pitch: facing === this.yaw ? this.pitch : 0, pose: m.pose });
+    m.animate(dt, { speed: this.grounded ? hs : 0, grounded: this.grounded, pitch: facing === this.yaw ? this.pitch : 0, pose: m.pose, crouch: this.crouchT });
 
     const g = this.game;
     const viewer = g.viewer;

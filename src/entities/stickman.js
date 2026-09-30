@@ -283,12 +283,18 @@ export class Stickman {
     const L = this.legs.L;
     const R = this.legs.R;
     const k = 14;
+    // crouch: lower hips, bend knees, lean forward (stride shrinks)
+    const cr = s.crouch || 0;
+    this.hips.position.y = 0.92 - 0.37 * cr;
+    const hip0 = 1.35 * cr; // includes 0.25 to undo the hip lean below
+    const knee0 = -1.9 * cr;
+    const stride = 1 - 0.55 * cr;
     if (s.grounded) {
-      L.hip.rotation.x = damp(L.hip.rotation.x, Math.sin(ph) * 0.75 * amt, k, dt);
-      R.hip.rotation.x = damp(R.hip.rotation.x, -Math.sin(ph) * 0.75 * amt, k, dt);
-      L.knee.rotation.x = damp(L.knee.rotation.x, -Math.max(0, Math.sin(ph + 1.4)) * 1.0 * amt, k, dt);
-      R.knee.rotation.x = damp(R.knee.rotation.x, -Math.max(0, -Math.sin(ph + 1.4)) * 1.0 * amt, k, dt);
-      this.body.position.y = Math.abs(Math.sin(ph)) * 0.05 * amt;
+      L.hip.rotation.x = damp(L.hip.rotation.x, hip0 + Math.sin(ph) * 0.75 * amt * stride, k, dt);
+      R.hip.rotation.x = damp(R.hip.rotation.x, hip0 - Math.sin(ph) * 0.75 * amt * stride, k, dt);
+      L.knee.rotation.x = damp(L.knee.rotation.x, knee0 - Math.max(0, Math.sin(ph + 1.4)) * 1.0 * amt * stride, k, dt);
+      R.knee.rotation.x = damp(R.knee.rotation.x, knee0 - Math.max(0, -Math.sin(ph + 1.4)) * 1.0 * amt * stride, k, dt);
+      this.body.position.y = Math.abs(Math.sin(ph)) * 0.05 * amt * stride;
     } else {
       L.hip.rotation.x = damp(L.hip.rotation.x, 0.7, 10, dt);
       R.hip.rotation.x = damp(R.hip.rotation.x, 0.2, 10, dt);
@@ -298,7 +304,8 @@ export class Stickman {
     }
 
     const p = s.pitch || 0;
-    this.chest.rotation.x = damp(this.chest.rotation.x, p * 0.3, 12, dt);
+    this.chest.rotation.x = damp(this.chest.rotation.x, p * 0.3 - cr * 0.25, 12, dt);
+    this.hips.rotation.x = -cr * 0.25;
     this.headG.rotation.x = damp(this.headG.rotation.x, p * 0.45, 12, dt);
     const aimX = Math.PI / 2 + p * 0.7;
     const A = this.arms;

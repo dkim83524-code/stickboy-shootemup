@@ -1,7 +1,7 @@
 # Stickboy Shoot-'em-Up
 
 A first-person, cel-shaded stickman hero shooter that runs in the browser (Three.js).
-4v4 team deathmatch against bots, six classes, each with its own weapons, ability and super.
+5v5 team deathmatch against bots on a multi-district city map, with six classes, each with its own weapons, ability and super.
 
 See [DESIGN.md](DESIGN.md) for the full design spec.
 
@@ -22,7 +22,7 @@ Click **PLAY** to lock the mouse. Press **Esc** to pause.
 | WASD / mouse | Move / look |
 | Space | Jump (Assassin: double jump; Drone: fly up) |
 | Left click | Primary fire |
-| Right click | Alt fire (scope, spin-up, knife, wrench, slam, drone boost) |
+| Right click | Alt fire (scope, spin-up, lunge, knife, wrench, slam, drone boost) |
 | E | Class ability |
 | Q | Super |
 | R | Reload |
@@ -37,8 +37,8 @@ Click **PLAY** to lock the mouse. Press **Esc** to pause.
 | Class | HP | Weapon | E ability | Super |
 | --- | --- | --- | --- | --- |
 | Berserker | 300 | Minigun (spin-up) | Shoulder Charge | **Rage:** fists only, faster, half damage taken, big jumps, mid-air ground slam. Charges from damage dealt *and* taken |
-| Mage | 150 | Wand: Arcane Bolt / Frost Shard / Chain Lightning / Meteor | Blink | No super bar. **Meteor** is spell 4: full mana plus a 3 s channel, cancelled by stuns |
-| Assassin | 125 | Katana | Dash (+ double jump) | **Shadow Walk:** invisible while moving and attacking. Otherwise stand still 1.5 s to cloak. Cloaked backstabs always kill; uncloaked backstabs do 75% max HP |
+| Mage | 150 | Wand: Arcane Bolt / Mend (self-heal) / Arcane Ward (following force field that heals allies and burns enemies) / Meteor | Blink | No super bar. **Meteor** is spell 4: full mana plus a 3 s channel, cancelled by stuns |
+| Assassin | 125 | Katana + RMB dash-slash Lunge | Stalk: crouch-walk while cloaked (+ double jump) | **Shadow Strike:** teleport behind the nearest enemy and kill; each kill chains another teleport (75% max-HP strikes). Cloaked backstabs always kill; uncloaked ones do 75% max HP |
 | Sniper | 150 | Sniper rifle (150 body / 300 head) | Grapple hook (mantles onto roofs) | **Wallhack:** enemy outlines through walls |
 | Engineer | 175 | Scrap shotgun + wrench | Build: turret, cover wall, jump pad | **Drone Strike:** fly a drone in first person, shoot, then ram enemies to detonate |
 | Gunslinger | 175 | Dual revolvers (ricochet) + throwing knives | Dodge roll (dodging a hit = full reload) | **Hair Trigger:** auto-lock, always-hit, double-damage crits, no fire-rate cap |

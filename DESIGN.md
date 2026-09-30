@@ -1,14 +1,14 @@
 # Stickboy Shoot-'em-Up: Design Spec (v1)
 
 A first-person, cel-shaded stickman hero shooter that runs in the browser (Three.js).
-Single-player: 4v4 team deathmatch against computer-controlled bots.
+Single-player: 5v5 team deathmatch against computer-controlled bots.
 
 ## Match
 
 | Rule | Value |
 | --- | --- |
-| Mode | Team deathmatch, Blue (you + 3 bots) vs Red (4 bots) |
-| Win | First team to 30 kills, or higher score when the 8:00 timer runs out |
+| Mode | Team deathmatch, Blue (you + 4 bots) vs Red (5 bots) |
+| Win | First team to 40 kills, or higher score when the 8:00 timer runs out |
 | Respawn | 4 s, at your team's spawn, with 2 s of spawn protection |
 | Class change | Any time from the death screen (C) or pause menu; applies on next spawn (instantly if you're standing in your spawn area) |
 | Health | Varies by class; regenerates after 5 s without taking damage |
@@ -23,7 +23,17 @@ Single-player: 4v4 team deathmatch against computer-controlled bots.
   Berserker horned helmet, Mage wizard hat, Assassin headband with tails, Sniper beanie,
   Engineer hard hat, Gunslinger baseball cap.
 - You see your own stick arms and weapon in first person.
-- One city map: rooftops, alleys, a central plaza, stairs up to some roofs. Bright flat colors.
+- One city map, point-symmetric so both teams get the same layout, split into districts:
+  - spawn courtyard behind a team-colored gate
+  - diner
+  - construction yard: climbable stacked containers, a scaffold tower with stairs, a crane
+  - L-shaped hotel with a skybridge over the main avenue
+  - setback tower and apartments
+  - warehouse with a walk-through tunnel
+  - park: trees, pond, gazebo, hedges
+  - market with awning stalls
+  - arch gates over the center street, fountains, and the statue plaza
+- Bright flat colors.
 - Deaths make the stickman pop apart into flying limbs.
 
 ## Controls
@@ -57,8 +67,10 @@ charges from damage taken. Supers last a fixed 10–15 s. The Mage has no super 
 
 ### Mage (150 HP)
 - **No super bar; a mana bar instead** (regenerates over time).
-- **Wand spell slots:** 1 Arcane Bolt (cheap), 2 Frost Shard (slows), 3 Chain Lightning (jumps between enemies),
-  4 Meteor (the ultimate).
+- **Wand spell slots:** 1 Arcane Bolt (cheap projectile), 2 Mend (heals the Mage for 55),
+  3 Arcane Ward, 4 Meteor (the ultimate).
+- **Arcane Ward:** a 5.5 m force field that follows the Mage for 5 s. Allies inside heal 20/s (the Mage doesn't).
+  Enemies inside take 24/s and get pushed outward, which counters Berserkers and Assassins who rush in.
 - **Meteor:** needs full mana and a 3 s channel. Cancelled if the Mage is stunned or killed, and the mana is lost.
   Q is a shortcut for it.
 - **E, Blink:** short teleport in the aim direction.
@@ -67,10 +79,17 @@ charges from damage taken. Supers last a fixed 10–15 s. The Mage has no super 
 - **Katana only**, no ranged attack.
 - **Cloak:** stand still for 1.5 s to turn invisible (looking around is fine). Moving or attacking breaks it.
   Enemies close by see a faint shimmer.
+- **E, Stalk:** crouch and creep at half speed. After 0.5 s you're cloaked, and moving doesn't break it.
+  Attacking or jumping stands you up. The crouch also shrinks your hitbox.
+- **Right click, Lunge:** a dash-slash that hits the first enemy in the path (3 s cooldown). It follows the
+  backstab rules, so a cloaked lunge into someone's back kills.
 - **Backstab:** while cloaked, always kills. Uncloaked, the first backstab on a target deals 75% of that
   target's max health (any class); further hits on that target are normal slashes.
-- **Double jump** and **E, Dash**.
-- **Super, Shadow Walk (12 s):** stays invisible while moving and attacking, so cloaked backstabs are on the move.
+- **Double jump.**
+- **Super, Shadow Strike (10 s):** teleport behind the nearest enemy (within 60 m) and backstab them: a kill.
+  Your invisibility is gone after that first strike. Every kill during the super re-arms the teleport, which fires
+  at the next nearest enemy, and those strikes take 75% of max health. Finish them with slashes to keep chaining
+  until the timer runs out.
 
 ### Sniper (150 HP)
 - **Sniper rifle:** 150 body / 300 head. Kills anyone in 1 headshot or 2 body shots. Right click scopes;
