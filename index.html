@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stickboy Shoot-'em-Up</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Rubik:wght@400;600;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <!-- ============================== HUD ============================== -->
+    <div id="hud" class="hidden">
+      <div class="overlay" id="ov-damage"></div>
+      <div class="overlay" id="ov-cloak"></div>
+      <div class="overlay" id="ov-rage"></div>
+      <div class="overlay" id="ov-trigger"></div>
+      <div class="overlay" id="ov-wallhack"></div>
+      <div class="overlay" id="ov-drone">
+        <div class="drone-frame"></div>
+        <div class="drone-text">
+          <div>DRONE LINK <span id="drone-time">12.0</span>s</div>
+          <div class="drone-hp"><div id="drone-hp-fill"></div></div>
+          <div class="small">WASD fly · SPACE up · SHIFT down · LMB shoot · RMB kamikaze boost</div>
+        </div>
+      </div>
+      <div class="overlay" id="ov-scope">
+        <div class="scope-lens"><div class="scope-h"></div><div class="scope-v"></div><div class="scope-dot"></div></div>
+      </div>
+
+      <div id="tags"></div>
+
+      <div id="topbar">
+        <div class="score blue" id="score-blue">0</div>
+        <div class="timer-box">
+          <div id="timer">8:00</div>
+          <div class="goal" id="goal">FIRST TO 30</div>
+        </div>
+        <div class="score red" id="score-red">0</div>
+      </div>
+      <div id="killfeed"></div>
+
+      <div id="crosshair" class="cross"><i></i><i></i><i></i><i></i><b></b></div>
+      <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
+      <div id="lockmarker"></div>
+      <div id="dmgdir"></div>
+      <div id="spinbar"><div id="spinbar-fill"></div></div>
+      <div id="note"></div>
+      <div id="notify"></div>
+
+      <div id="bl" class="panel">
+        <div class="class-line"><span id="hud-class">BERSERKER</span><span id="hud-name">You</span></div>
+        <div class="hp-row">
+          <div id="hp-num">300</div>
+          <div class="hp-bar"><div id="hp-fill"></div><div id="hp-ghost"></div></div>
+        </div>
+      </div>
+
+      <div id="bc">
+        <div id="slots"></div>
+        <div id="super" class="panel">
+          <div class="super-head"><span class="key">Q</span><span id="super-name">RAGE</span><span id="super-pct">0%</span></div>
+          <div class="super-bar"><div id="super-fill"></div></div>
+        </div>
+      </div>
+
+      <div id="br" class="panel">
+        <div id="extra"></div>
+        <div class="br-row">
+          <div id="ability" class="ability">
+            <div class="ability-cd" id="ability-cd"></div>
+            <span class="key">E</span>
+            <span id="ability-name">Charge</span>
+          </div>
+          <div class="ammo">
+            <span id="ammo">200</span><span id="ammo-max">/200</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="death" class="hidden">
+        <div class="death-title">ELIMINATED</div>
+        <div id="death-by"></div>
+        <div id="death-timer"></div>
+        <div class="death-hint">Press <span class="key">C</span> to change class</div>
+      </div>
+
+      <div id="scoreboard" class="hidden"></div>
+    </div>
+
+    <!-- ============================== MENUS ============================== -->
+    <div id="menu" class="screen">
+      <div class="menu-left">
+        <h1 class="logo">STICKBOY<br /><span>SHOOT-'EM-UP</span></h1>
+        <p class="tag">4v4 cel-shaded stick-figure mayhem vs bots</p>
+        <div class="section-title">Pick your class</div>
+        <div class="class-grid" id="class-grid"></div>
+        <div class="menu-row">
+          <div class="seg" id="difficulty">
+            <button data-v="easy">Easy</button>
+            <button data-v="normal" class="on">Normal</button>
+            <button data-v="hard">Hard</button>
+          </div>
+          <button class="big-btn" id="play-btn">PLAY</button>
+        </div>
+        <details class="controls">
+          <summary>Controls</summary>
+          <div class="controls-grid">
+            <span>WASD / Mouse</span><span>Move / Look</span>
+            <span>Space</span><span>Jump</span>
+            <span>LMB / RMB</span><span>Primary / Alt</span>
+            <span>E</span><span>Class ability</span>
+            <span>Q</span><span>Super</span>
+            <span>R</span><span>Reload</span>
+            <span>1–4 / Scroll</span><span>Spell / build select</span>
+            <span>Tab</span><span>Scoreboard</span>
+            <span>Esc</span><span>Pause</span>
+          </div>
+        </details>
+      </div>
+      <div class="menu-right">
+        <div id="preview-box" class="preview"></div>
+        <div id="class-detail" class="panel detail"></div>
+      </div>
+    </div>
+
+    <div id="classpick" class="screen hidden">
+      <div class="menu-left">
+        <h2 class="screen-title">CHANGE CLASS</h2>
+        <p class="tag">Takes effect when you respawn.</p>
+        <div class="class-grid" id="class-grid-2"></div>
+        <div class="menu-row">
+          <button class="big-btn" id="classpick-ok">CONFIRM</button>
+          <button class="btn" id="classpick-cancel">Cancel</button>
+        </div>
+      </div>
+      <div class="menu-right">
+        <div id="preview-box-2" class="preview"></div>
+        <div id="class-detail-2" class="panel detail"></div>
+      </div>
+    </div>
+
+    <div id="pause" class="screen hidden center">
+      <div class="panel pause-panel">
+        <h2 class="screen-title">PAUSED</h2>
+        <button class="big-btn" id="resume-btn">RESUME</button>
+        <button class="btn" id="change-class-btn">Change class</button>
+        <label class="slider">Mouse sensitivity <input type="range" id="sens" min="0.2" max="3" step="0.05" value="1" /><span id="sens-v">1.00</span></label>
+        <label class="slider">Field of view <input type="range" id="fov" min="70" max="110" step="1" value="85" /><span id="fov-v">85</span></label>
+        <label class="slider">Volume <input type="range" id="vol" min="0" max="1" step="0.05" value="0.6" /><span id="vol-v">60%</span></label>
+        <button class="btn" id="quit-btn">Quit to menu</button>
+      </div>
+    </div>
+
+    <div id="endscreen" class="screen hidden center">
+      <div class="panel end-panel">
+        <h2 id="end-title" class="screen-title">VICTORY</h2>
+        <div id="end-score"></div>
+        <div id="end-board"></div>
+        <div class="menu-row">
+          <button class="big-btn" id="again-btn">PLAY AGAIN</button>
+          <button class="btn" id="menu-btn">Main menu</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="clicktoplay" class="hidden">CLICK TO PLAY</div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
