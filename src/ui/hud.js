@@ -185,10 +185,10 @@ export class Hud {
     }
     let extra = '';
     if (info.scrap !== undefined) extra = `SCRAP ${info.scrap}${info.buildMode ? ' · 1-3 pick · LMB place · RMB cancel' : ''}`;
-    if (info.knives !== undefined) extra = `KNIVES ${'<span class="pip on"></span>'.repeat(info.knives)}${'<span class="pip"></span>'.repeat(3 - info.knives)}`;
+    if (info.grenades !== undefined) extra = `RMB GRENADES ${'<span class="pip on nade"></span>'.repeat(info.grenades)}${'<span class="pip nade"></span>'.repeat(2 - info.grenades)}`;
     if (info.cloak !== undefined) {
-      const lunge = info.lunge > 0 ? `${info.lunge.toFixed(1)}s` : 'READY';
-      extra = `RMB LUNGE ${lunge} · ${info.cloaked ? 'CLOAKED' : 'CLOAK'} <span class="cloakbar"><i style="width:${(info.cloak * 100).toFixed(0)}%"></i></span>`;
+      const cd = (t) => (t > 0 ? `${t.toFixed(1)}s` : '✓');
+      extra = `LUNGE ${cd(info.lunge)} · F PEARL ${cd(info.pearl)} · ${info.cloaked ? 'CLOAKED' : 'CLOAK'} <span class="cloakbar"><i style="width:${(info.cloak * 100).toFixed(0)}%"></i></span>`;
     }
     this.set('extra', 'html', extra);
 
@@ -298,6 +298,40 @@ export class Hud {
       t.el.style.left = s.x.toFixed(0) + 'px';
       t.el.style.top = s.y.toFixed(0) + 'px';
       t.el.style.opacity = d > 45 ? '0.6' : '1';
+    }
+    // turret health bars (own team always, enemy turrets when in sight)
+    for (const d of game.deployables) {
+      if (!d.alive || d.kind !== 'turret') continue;
+      const ally = d.team === p.team;
+      const dist = d.pos.distanceTo(game.camera.position);
+      if (dist > 55) continue;
+      const top = _p.set(d.pos.x, d.pos.y + 1.75, d.pos.z);
+      if (!ally && !game.world.lineOfSight(game.camera.position, top, false)) continue;
+      const s = this.project(game, top);
+      if (!s) continue;
+      const key = 'd' + d.id;
+      seen.add(key);
+      let t = this.tags.get(key);
+      if (!t) {
+        const el = document.createElement('div');
+        el.innerHTML = `<div class="nm"></div><div class="hb"><i></i></div><div class="ub"><i></i></div>`;
+        this.el.tags.appendChild(el);
+        t = { el, nm: el.firstChild, bar: el.querySelector('.hb i'), ub: el.querySelector('.ub'), ubar: el.querySelector('.ub i'), last: '' };
+        this.tags.set(key, t);
+      }
+      t.el.className = 'nametag turret ' + (ally ? 'ally' : 'enemy');
+      const label = `TURRET LV${d.level}`;
+      if (t.last !== label) {
+        t.nm.textContent = label;
+        t.last = label;
+      }
+      t.bar.style.width = Math.max(0, (d.hp / d.maxHp) * 100).toFixed(0) + '%';
+      const showUpgrade = ally && d.owner === p && d.level < 3;
+      t.ub.style.display = showUpgrade ? '' : 'none';
+      if (showUpgrade) t.ubar.style.width = d.upgrade.toFixed(0) + '%';
+      t.el.style.left = s.x.toFixed(0) + 'px';
+      t.el.style.top = s.y.toFixed(0) + 'px';
+      t.el.style.opacity = dist > 40 ? '0.6' : '1';
     }
     for (const [id, t] of this.tags) {
       if (!seen.has(id)) {

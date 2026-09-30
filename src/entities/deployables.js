@@ -18,8 +18,19 @@ function inkMesh(geo, color, outline = 0.03) {
 export const BUILDS = [
   { id: 'turret', name: 'Turret', cost: 125, size: [0.9, 1.3, 0.9] },
   { id: 'wall', name: 'Cover Wall', cost: 60, size: [4, 2.6, 0.5] },
-  { id: 'pad', name: 'Jump Pad', cost: 50, size: [1.9, 0.22, 1.9] },
+  { id: 'pad', name: 'Jump Pad', cost: 40, size: [1.9, 0.22, 1.9] },
 ];
+
+/** Turret stats per level. Engineers level turrets up by wrenching them at full health. */
+export const TURRET_LEVELS = [
+  { hp: 150, range: 30, damage: 10, interval: 0.16, turn: 5 },
+  { hp: 230, range: 38, damage: 12, interval: 0.12, turn: 6.5 },
+  { hp: 320, range: 46, damage: 14, interval: 0.1, turn: 8, rockets: 2.4 },
+];
+export const MAX_TURRET_LEVEL = TURRET_LEVELS.length;
+
+const rocketGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.45, 8).rotateX(Math.PI / 2);
+let NEXT_ID = 1;
 
 /** Footprint box for a build placed at `pos` (feet) facing `yaw`. */
 export function buildBox(kind, pos, yaw) {
@@ -90,12 +101,15 @@ export class Deployable {
     this.owner = owner;
     this.team = owner.team;
     this.kind = kind;
+    this.id = NEXT_ID++;
     this.isDeployable = true;
     this.name = BUILDS.find((b) => b.id === kind).name;
+    this.level = 1;
+    this.upgrade = 0; // 0..100 progress toward the next turret level
     this.pos = pos.clone();
     this.yaw = yaw;
     this.alive = true;
-    this.maxHp = { turret: 150, wall: 400, pad: 100 }[kind];
+    this.maxHp = { turret: TURRET_LEVELS[0].hp, wall: 400, pad: 180 }[kind];
     this.hp = this.maxHp;
     this.buildT = 0;
     this.group = buildModel(kind, this.team);
@@ -116,6 +130,57 @@ export class Deployable {
     this.nextScan = 0;
     this.nextShot = 0;
     this.padCd = new Map();
+    this.nextRocket = 0;
+  }
+
+  get stats() {
+    return TURRET_LEVELS[this.level - 1];
+  }
+
+  /** Add upgrade progress; returns true when the turret levels up. */
+  addUpgrade(amount) {
+    if (this.kind !== 'turret' || this.level >= MAX_TURRET_LEVEL) return false;
+    this.upgrade += amount;
+    if (this.upgrade < 100) return false;
+    this.upgrade = 0;
+    this.level++;
+    this.maxHp = this.stats.hp;
+    this.hp = this.maxHp;
+    this.applyLevelVisuals();
+    const g = this.game;
+    g.effects.ring(this.pos, { color: 0xffd23f, radius: 2.5, life: 0.5 });
+    g.effects.burst(this.center(), { count: 24, color: [0xffd23f, 0xffffff], speed: 6, size: 0.12, life: 0.6 });
+    sfx.play('ready', { pos: this.pos, volume: 0.8 });
+    return true;
+  }
+
+  /** Bolt on extra hardware per level: twin barrels at 2, rocket pods at 3. */
+  applyLevelVisuals() {
+    const head = this.group.userData.head;
+    if (this.level >= 2 && !head.userData.lv2) {
+      head.userData.lv2 = true;
+      for (const x of [-0.13, 0.13]) {
+        const b = inkMesh(new THREE.CylinderGeometry(0.045, 0.045, 0.55, 8).rotateX(Math.PI / 2), 0x2b2b2b, 0.02);
+        b.position.set(x, -0.08, -0.45);
+        head.add(b);
+      }
+      const plate = inkMesh(new THREE.BoxGeometry(0.62, 0.08, 0.66), 0xffd23f, 0.02);
+      plate.position.y = 0.22;
+      head.add(plate);
+    }
+    if (this.level >= 3 && !head.userData.lv3) {
+      head.userData.lv3 = true;
+      for (const x of [-0.42, 0.42]) {
+        const pod = inkMesh(new THREE.BoxGeometry(0.22, 0.26, 0.42), 0xc1121f, 0.025);
+        pod.position.set(x, 0.02, -0.05);
+        head.add(pod);
+        for (const y of [-0.06, 0.06]) {
+          const tip = inkMesh(new THREE.CylinderGeometry(0.045, 0.045, 0.05, 8).rotateX(Math.PI / 2), 0xf6f1e3, 0);
+          tip.position.set(x, 0.02 + y, -0.28);
+          head.add(tip);
+        }
+      }
+    }
   }
 
   center(out = new THREE.Vector3()) {
@@ -145,7 +210,8 @@ export class Deployable {
     if (this.time >= this.nextScan) {
       this.nextScan = this.time + 0.25;
       this.target = null;
-      let best = 30;
+      const st = this.stats;
+      let best = st.range;
       for (const e of g.enemiesOf(this.team)) {
         if (e.cloaked && e.pos.distanceTo(this.pos) > 2.5) continue;
         const p = e.chest(_w);
@@ -169,19 +235,20 @@ export class Deployable {
       const p = t.isCharacter ? t.chest(_w) : _w.copy(t.pos);
       const dy = yawTo(p.x - eye.x, p.z - eye.z);
       const dp = pitchTo(p.x - eye.x, p.y - eye.y, p.z - eye.z);
-      const turn = 5 * dt;
+      const st = this.stats;
+      const turn = st.turn * dt;
       const ey = angleDiff(this.aimYaw, dy);
       this.aimYaw += Math.max(-turn, Math.min(turn, ey));
       this.aimPitch += Math.max(-turn, Math.min(turn, dp - this.aimPitch));
       if (Math.abs(ey) < 8 * DEG && this.time >= this.nextShot) {
-        this.nextShot = this.time + 0.16;
+        this.nextShot = this.time + st.interval;
         const dir = applySpread(dirFromYawPitch(this.aimYaw, this.aimPitch), 2.2 * DEG);
         const muzzle = eye.clone().addScaledVector(dir, 0.75);
         g.fireBullet(this.owner, {
           origin: muzzle,
           dir,
-          range: 34,
-          damage: 10,
+          range: st.range + 4,
+          damage: st.damage,
           headMult: 1.5,
           tracer: 0xffa94d,
           tracerWidth: 0.03,
@@ -193,10 +260,37 @@ export class Deployable {
         sfx.play('turret', { pos: this.pos, volume: 0.5 });
         g.effects.flash(muzzle, { color: 0xffd23f, size: 0.1, life: 0.04 });
       }
+      if (st.rockets && Math.abs(ey) < 10 * DEG && this.time >= this.nextRocket) {
+        this.nextRocket = this.time + st.rockets;
+        this.fireRocket(eye, p);
+      }
     } else {
       this.aimYaw += dt * 0.6;
     }
     head.rotation.set(this.aimPitch, this.aimYaw, 0, 'YXZ');
+  }
+
+  fireRocket(eye, target) {
+    const g = this.game;
+    const dir = target.clone().sub(eye).normalize();
+    const side = (this.nextRocket * 10) % 2 < 1 ? 1 : -1;
+    const from = eye.clone().addScaledVector(dir, 0.8).add(new THREE.Vector3(-dir.z * 0.42 * side, 0.02, dir.x * 0.42 * side));
+    const mesh = inkMesh(rocketGeo, 0xc1121f, 0.02);
+    g.projectiles.spawn({
+      owner: this.owner,
+      pos: from,
+      vel: dir.multiplyScalar(30),
+      radius: 0.2,
+      damage: 0,
+      life: 2.5,
+      mesh,
+      orient: true,
+      trail: [0xd9d4c7, 0x8a8f9c],
+      trailCount: 2,
+      weapon: 'Turret Rocket',
+      onHit: (p) => g.explode(p, 3.2, 55, this.owner, { minMul: 0.35, knockOut: 6, knockUp: 4, weapon: 'Turret Rocket' }),
+    });
+    sfx.play('dash', { pos: this.pos, volume: 0.7, rate: 0.5 });
   }
 
   updatePad(dt) {
@@ -210,9 +304,10 @@ export class Deployable {
       if (Math.abs(c.pos.y - top) > 0.35) continue;
       if ((this.padCd.get(c.id) || 0) > this.time) continue;
       this.padCd.set(c.id, this.time + 0.6);
-      c.vel.y = 22;
-      c.vel.x *= 1.3;
-      c.vel.z *= 1.3;
+      // launch high and fling forward in the direction the jumper is facing
+      c.vel.y = 27;
+      c.vel.x = c.vel.x * 1.2 - Math.sin(c.yaw) * 9;
+      c.vel.z = c.vel.z * 1.2 - Math.cos(c.yaw) * 9;
       c.grounded = false;
       c.forced = null;
       sfx.play('pad', { pos: this.pos, volume: 0.9 });
@@ -227,6 +322,7 @@ export class Deployable {
   destroy() {
     if (!this.alive) return;
     this.remove();
+    this.game.dropScrap(this.pos, 20);
     this.game.effects.explosion(this.center(), 2.2, { color: 0xffa94d });
     sfx.play('explosion', { pos: this.pos, volume: 0.6, rate: 1.4 });
   }

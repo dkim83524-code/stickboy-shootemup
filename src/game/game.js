@@ -10,6 +10,10 @@ import { CLASS_ORDER, BOT_NAMES } from '../classes/defs.js';
 import { BotBrain } from '../ai/bot.js';
 import { sfx } from '../core/audio.js';
 import { clamp, shuffle, lerp, damp, rand } from '../core/utils.js';
+import { toonMat, addOutline } from '../core/toon.js';
+
+const gearGeo = new THREE.TorusGeometry(0.2, 0.08, 6, 10);
+const boltGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
 
 export const TEAM_SIZE = 5;
 export const SCORE_LIMIT = 40;
@@ -36,6 +40,7 @@ export class Game {
     this.deployables = [];
     this.drones = [];
     this.zones = [];
+    this.pickups = [];
     this.time = 0;
     this.state = 'menu';
     this.scores = [0, 0];
@@ -114,6 +119,8 @@ export class Game {
     this.drones = [];
     for (const z of this.zones) z.marker.remove();
     this.zones = [];
+    for (const p of this.pickups) this.scene.remove(p.mesh);
+    this.pickups = [];
     this.projectiles.clear();
     this.effects.clear();
     sfx.stopAllLoops();
@@ -171,6 +178,7 @@ export class Game {
     }
     this.projectiles.update(dt);
     this.updateZones(dt);
+    this.updatePickups(dt);
     this.effects.update(dt);
     for (const c of this.characters) c.syncModel(dt);
 
@@ -380,6 +388,47 @@ export class Game {
     return dealt;
   }
 
+  // ---------------------------------------------------------------- scrap pickups
+  /** Scrap drops where anyone dies or a build breaks; Engineers walk over it to collect. */
+  dropScrap(pos, amount) {
+    const mesh = new THREE.Group();
+    const gear = new THREE.Mesh(gearGeo, toonMat(0x9aa3ad));
+    addOutline(gear, 0.025);
+    const bolt = new THREE.Mesh(boltGeo, toonMat(0xf4a300));
+    addOutline(bolt, 0.02);
+    bolt.position.set(0.18, 0.1, 0);
+    mesh.add(gear, bolt);
+    const ground = this.world.groundHeight(pos.x, pos.z, pos.y + 0.5);
+    mesh.position.set(pos.x, ground + 0.4, pos.z);
+    this.scene.add(mesh);
+    this.pickups.push({ mesh, amount, life: 25, y: ground + 0.4 });
+  }
+
+  updatePickups(dt) {
+    for (let i = this.pickups.length - 1; i >= 0; i--) {
+      const p = this.pickups[i];
+      p.life -= dt;
+      p.mesh.rotation.y += dt * 2.5;
+      p.mesh.position.y = p.y + Math.sin(this.time * 3 + i) * 0.08;
+      let taken = p.life <= 0;
+      if (!taken) {
+        for (const c of this.characters) {
+          if (!c.alive || c.classId !== 'engineer') continue;
+          if (Math.hypot(c.pos.x - p.mesh.position.x, c.pos.z - p.mesh.position.z) > 1.4 || Math.abs(c.pos.y - p.y) > 2) continue;
+          if (!c.kit.collectScrap(p.amount)) continue;
+          taken = true;
+          sfx.play('build', { pos: c.pos, volume: 0.6, rate: 1.6 });
+          if (this.isLocal(c)) this.hud.notify(`+${p.amount} SCRAP`, 'good');
+          break;
+        }
+      }
+      if (taken) {
+        this.scene.remove(p.mesh);
+        this.pickups.splice(i, 1);
+      }
+    }
+  }
+
   /** Restore health (capped). Returns the amount actually healed. */
   heal(target, amount, healer = null) {
     if (!target || !target.alive || !target.isCharacter) return 0;
@@ -393,6 +442,7 @@ export class Game {
 
   kill(victim, killer, info) {
     victim.die(killer, info);
+    this.dropScrap(victim.pos, 30);
     victim.killedBy = killer;
     const credited = killer && killer !== victim && killer.team !== victim.team;
     if (credited) {
@@ -441,9 +491,10 @@ export class Game {
     }
   }
 
-  addZone({ pos, radius, dps, time, owner, weapon }) {
-    const marker = this.effects.marker(pos, radius, 0xff5a1f);
-    this.zones.push({ pos, radius, dps, time, owner, weapon, tick: 0, marker });
+  /** Damage-over-time area (meteor fire, poison pools). */
+  addZone({ pos, radius, dps, time, owner, weapon, color = 0xff5a1f, particles = [0xff5a1f, 0xffd23f, 0xff9f1c] }) {
+    const marker = this.effects.marker(pos, radius, color);
+    this.zones.push({ pos, radius, dps, time, owner, weapon, particles, tick: 0, marker });
   }
 
   updateZones(dt) {
@@ -455,7 +506,7 @@ export class Game {
         const a = Math.random() * Math.PI * 2;
         const r = Math.sqrt(Math.random()) * z.radius;
         const p = _v.set(z.pos.x + Math.cos(a) * r, z.pos.y + 0.1, z.pos.z + Math.sin(a) * r);
-        this.effects.burst(p, { count: 1, color: [0xff5a1f, 0xffd23f, 0xff9f1c], speed: 1, size: 0.18, life: 0.6, gravity: -6 });
+        this.effects.burst(p, { count: 1, color: z.particles, speed: 1, size: 0.18, life: 0.6, gravity: -6 });
       }
       if (z.tick <= 0) {
         z.tick = 0.25;
@@ -533,7 +584,7 @@ export class Game {
       cam.rotation.set(p.pitch + this.viewPunchAmt, p.yaw, Math.sin(this.bobPhase) * 0.004 * amt, 'YXZ');
       const z = p.kit.zoom ? p.kit.zoom() : null;
       if (z && z.t > 0) fov = lerp(fov, z.fov, z.t);
-      if (p.superActive && p.classId === 'berserker') fov += 6;
+      fov += p.kit.fovBoost();
     } else {
       this.cameraMode = 'death';
       const k = p.killedBy && p.killedBy.alive ? p.killedBy : null;

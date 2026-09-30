@@ -304,7 +304,8 @@ export class Stickman {
     }
 
     const p = s.pitch || 0;
-    this.chest.rotation.x = damp(this.chest.rotation.x, p * 0.3 - cr * 0.25, 12, dt);
+    const lean = s.pose === 'charge' ? -0.6 : 0;
+    this.chest.rotation.x = damp(this.chest.rotation.x, p * 0.3 - cr * 0.25 + lean, 12, dt);
     this.hips.rotation.x = -cr * 0.25;
     this.headG.rotation.x = damp(this.headG.rotation.x, p * 0.45, 12, dt);
     const aimX = Math.PI / 2 + p * 0.7;
@@ -371,6 +372,10 @@ export class Stickman {
         }
         break;
       }
+      case 'charge':
+        set(A.R, 0.5, -0.5, 1.2);
+        set(A.L, 0.5, 0.5, 1.2);
+        break;
       case 'build':
         set(A.R, 0.9, -0.2, 0.9);
         set(A.L, 0.9, 0.2, 0.9);

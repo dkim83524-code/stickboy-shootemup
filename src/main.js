@@ -237,6 +237,7 @@ function applyPlayerInput() {
   inp.altPressed = input.pressedButtons[2];
   inp.ability = k('KeyE');
   inp.abilityPressed = input.pressed('KeyE');
+  inp.itemPressed = input.pressed('KeyF');
   inp.superPressed = input.pressed('KeyQ');
   inp.reloadPressed = input.pressed('KeyR');
   inp.descend = k('ShiftLeft') || k('ShiftRight') || k('ControlLeft');

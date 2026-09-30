@@ -149,6 +149,9 @@ export class Kit {
   facingYaw() {
     return null;
   }
+  fovBoost() {
+    return 0;
+  }
   hideViewmodel() {
     return false;
   }
@@ -210,6 +213,27 @@ export class Kit {
     arm.hand.getWorldPosition(out);
     c.aim(_v);
     return out.addScaledVector(_v, 0.5);
+  }
+
+  /** Spot near `p` where this character fits, standing on the surface below it (or null). */
+  freeSpot(p) {
+    const g = this.game;
+    const c = this.c;
+    const r = c.radius;
+    const hits = [];
+    for (const d of [0, 0.6, 1.2, 1.8]) {
+      const n = d === 0 ? 1 : 8;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const x = p.x + Math.cos(a) * d;
+        const z = p.z + Math.sin(a) * d;
+        if (!g.world.inBounds(x, z, 0.6)) continue;
+        const y = g.world.groundHeight(x, z, p.y + 0.6, r);
+        g.world.overlapping(x - r, y + 0.05, z - r, x + r, y + c.height, z + r, hits);
+        if (!hits.length) return new THREE.Vector3(x, y, z);
+      }
+    }
+    return null;
   }
 
   /**

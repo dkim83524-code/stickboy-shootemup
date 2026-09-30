@@ -5,6 +5,8 @@ import { sfx } from '../core/audio.js';
 import { applySpread, forwardFlat, DEG, damp } from '../core/utils.js';
 
 const MAX_AMMO = 200;
+const CHARGE_TIME = 1.6;
+const CHARGE_CD = 9;
 const _v = new THREE.Vector3();
 
 function minigunModel(outline = 0.01, scale = 1) {
@@ -46,6 +48,8 @@ export class BerserkerKit extends Kit {
     this.slamming = false;
     this.punchSide = 1;
     this.punchT = 9;
+    this.charging = false;
+    this.chargeT = 0;
     this.vmBase.set(0, 0, 0);
   }
 
@@ -58,6 +62,7 @@ export class BerserkerKit extends Kit {
     this.ammo = MAX_AMMO;
     this.reloading = 0;
     this.slamming = false;
+    this.charging = false;
     this.setRageVisuals(false);
   }
 
@@ -66,12 +71,18 @@ export class BerserkerKit extends Kit {
     return 1 - this.spin * 0.45;
   }
 
+  fovBoost() {
+    return this.charging ? 12 : this.raging ? 6 : 0;
+  }
+
   jumpMul() {
     return this.raging ? 1.65 : 1;
   }
 
   damageTakenMul() {
-    return this.raging ? 0.5 : 1;
+    // Rage and the charge each halve damage; together they bottom out at 35%
+    if (this.raging && this.charging) return 0.35;
+    return this.raging || this.charging ? 0.5 : 1;
   }
 
   onTookDamage(amount) {
@@ -79,6 +90,7 @@ export class BerserkerKit extends Kit {
   }
 
   pose() {
+    if (this.charging) return 'charge';
     return this.raging ? 'fists' : 'minigun';
   }
 
@@ -88,8 +100,12 @@ export class BerserkerKit extends Kit {
 
   update(dt, inp) {
     const c = this.c;
-    if (inp.abilityPressed && this.ready('charge') && !this.slamming) this.shoulderCharge();
+    if (inp.abilityPressed && this.ready('charge') && !this.slamming && !this.charging) this.startCharge();
     if (this.slamming) c.vel.y = Math.min(c.vel.y, -36);
+    if (this.charging) {
+      this.spin = Math.max(0, this.spin - dt / 0.3);
+      return;
+    }
 
     if (this.raging) {
       if (inp.fire && this.ready('punch')) this.punch();
@@ -148,28 +164,66 @@ export class BerserkerKit extends Kit {
     if (Math.random() < 0.5) this.game.effects.flash(this.muzzle(), { color: 0xffd23f, size: 0.12, life: 0.04 });
   }
 
-  shoulderCharge() {
+  /**
+   * E: a sustained bull rush. You steer with the mouse, plow through enemies (damage,
+   * knock them aside, brief stun) and take half damage until it ends or you hit a wall.
+   */
+  startCharge() {
     const c = this.c;
-    this.cooldown('charge', 7);
-    const f = forwardFlat(c.yaw);
-    const hit = new Set();
-    sfx.play('dash', { pos: c.pos, volume: 0.9, rate: 0.7 });
+    const g = this.game;
+    this.cooldown('charge', CHARGE_CD);
+    this.charging = true;
+    this.chargeT = 0;
+    this.fireAcc = 0;
+    const struck = new Set();
+    sfx.play('dash', { pos: c.pos, volume: 1, rate: 0.55 });
+    sfx.play('spin', { pos: c.pos, volume: 0.6, rate: 0.5 });
+    const fwd = new THREE.Vector3();
+    const right = new THREE.Vector3();
     c.forced = {
-      vel: f.clone().multiplyScalar(this.raging ? 26 : 21),
-      time: 0.38,
+      vel: new THREE.Vector3(),
+      time: CHARGE_TIME,
       gravity: true,
       update: (dt, fm) => {
-        this.game.effects.burst(c.pos, { count: 1, color: 0xdddddd, speed: 1, size: 0.14, life: 0.4, gravity: 0 });
-        for (const t of this.game.enemiesOf(c.team)) {
-          if (hit.has(t)) continue;
-          if (Math.hypot(t.pos.x - c.pos.x, t.pos.z - c.pos.z) < 1.3 && Math.abs(t.pos.y - c.pos.y) < 1.6) {
-            hit.add(t);
-            this.game.damage(t, 40, c, { weapon: 'Shoulder Charge', dir: f, knock: f.clone().multiplyScalar(15).setY(6) });
-            sfx.play('punch', { pos: t.pos, volume: 1.1, rate: 0.8 });
-            this.game.shake(c, 0.4);
-            fm.cancel = true;
-          }
+        this.chargeT += dt;
+        const speed = (this.raging ? 17 : 14) * Math.min(1, 0.45 + this.chargeT * 3);
+        forwardFlat(c.yaw, fwd);
+        fm.vel.copy(fwd).multiplyScalar(speed);
+        right.set(-fwd.z, 0, fwd.x);
+        if (Math.random() < 0.7) g.effects.burst(c.pos, { count: 2, color: [0xd9d4c7, 0x8a8f9c], speed: 2, size: 0.16, life: 0.5, gravity: 2 });
+        g.shake(c, 0.12);
+        for (const t of g.enemiesOf(c.team)) {
+          if (struck.has(t)) continue;
+          const dx = t.pos.x - c.pos.x;
+          const dz = t.pos.z - c.pos.z;
+          if (Math.hypot(dx, dz) > 1.6 || Math.abs(t.pos.y - c.pos.y) > 1.8) continue;
+          if (dx * fwd.x + dz * fwd.z < -0.3) continue; // only what's in front
+          struck.add(t);
+          const side = dx * right.x + dz * right.z >= 0 ? 1 : -1;
+          const knock = fwd.clone().multiplyScalar(11).addScaledVector(right, side * 8).setY(6.5);
+          g.damage(t, 35, c, { weapon: 'Charge', dir: fwd.clone(), knock, stun: 0.35 });
+          g.effects.burst(t.chest(), { count: 12, color: [0xffffff, 0xffd23f], speed: 6, size: 0.12, life: 0.4 });
+          sfx.play('punch', { pos: t.pos, volume: 1.2, rate: 0.7 });
+          g.shake(c, 0.5);
         }
+        for (const d of g.deployables) {
+          if (!d.alive || d.team === c.team || struck.has(d)) continue;
+          if (d.center().distanceTo(c.chest()) > 1.9) continue;
+          struck.add(d);
+          g.damage(d, 60, c, { weapon: 'Charge' });
+          sfx.play('punch', { pos: d.pos, volume: 1, rate: 0.6 });
+        }
+      },
+      onBlocked: (fm) => {
+        if (this.chargeT < 0.15) return;
+        fm.cancel = true;
+        g.shake(c, 0.6);
+        sfx.play('slam', { pos: c.pos, volume: 0.6, rate: 1.4 });
+      },
+      onEnd: () => {
+        this.charging = false;
+        c.vel.x *= 0.35;
+        c.vel.z *= 0.35;
       },
     };
   }
@@ -238,6 +292,7 @@ export class BerserkerKit extends Kit {
 
   onDeath() {
     this.slamming = false;
+    this.charging = false;
     this.spin = 0;
   }
 
@@ -253,9 +308,9 @@ export class BerserkerKit extends Kit {
     return {
       ammo: this.raging ? null : this.reloading > 0 ? 'RELOADING' : `${this.ammo}`,
       ammoMax: this.raging ? null : MAX_AMMO,
-      ability: { name: 'Charge', cd: this.cdLeft('charge'), max: 7 },
+      ability: { name: this.charging ? 'CHARGING' : 'Charge', cd: this.cdLeft('charge'), max: CHARGE_CD, active: this.charging },
       spin: this.spin,
-      note: this.raging ? (this.c.grounded ? 'JUMP + RMB: SLAM' : 'RMB: SLAM!') : null,
+      note: this.charging ? 'CHARGE! HALF DAMAGE TAKEN' : this.raging ? (this.c.grounded ? 'JUMP + RMB: SLAM' : 'RMB: SLAM!') : null,
     };
   }
 
@@ -314,7 +369,8 @@ export class BerserkerKit extends Kit {
     u.L.position.x = this.punchSide < 0 ? k * 0.12 : 0;
     const slamLift = this.slamming ? 0.15 : 0;
     u.fists.position.y = damp(u.fists.position.y, slamLift, 10, dt);
-    if (this.reloading > 0) u.gun.position.y = damp(u.gun.position.y, -0.25, 8, dt);
-    else u.gun.position.y = damp(u.gun.position.y, 0, 8, dt);
+    const low = this.reloading > 0 ? -0.25 : this.charging ? -0.18 : 0;
+    u.gun.position.y = damp(u.gun.position.y, low, 8, dt);
+    u.gun.rotation.z = damp(u.gun.rotation.z, this.charging ? 0.5 : 0, 8, dt);
   }
 }

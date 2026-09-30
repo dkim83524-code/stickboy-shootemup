@@ -27,6 +27,7 @@ export function makeInput() {
     altPressed: false,
     ability: false,
     abilityPressed: false,
+    itemPressed: false,
     superPressed: false,
     reloadPressed: false,
     slot: 0,
@@ -38,7 +39,7 @@ export function makeInput() {
 function clearActions(inp) {
   inp.mx = inp.mz = 0;
   inp.jump = inp.jumpPressed = inp.fire = inp.firePressed = inp.alt = inp.altPressed = false;
-  inp.ability = inp.abilityPressed = inp.superPressed = inp.reloadPressed = inp.descend = false;
+  inp.ability = inp.abilityPressed = inp.itemPressed = inp.superPressed = inp.reloadPressed = inp.descend = false;
   inp.slot = 0;
   inp.wheel = 0;
 }

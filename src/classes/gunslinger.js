@@ -5,7 +5,11 @@ import { applySpread, DEG, forwardFlat, rightFlat, clamp, damp } from '../core/u
 import { addOutline, toonMat } from '../core/toon.js';
 
 const MAG = 12;
-const MAX_KNIVES = 3;
+const FIRE_INTERVAL = 0.32; // regular fire; Hair Trigger has no cap
+const MAX_GRENADES = 2;
+const GRENADE_REGEN = 6;
+const GRENADE_GRAVITY = 20;
+const COOK_TIME = 1.1; // seconds of holding RMB for a full-power throw
 const LOCK_CONE = 40 * DEG;
 const _v = new THREE.Vector3();
 const _w = new THREE.Vector3();
@@ -28,8 +32,32 @@ function revolverModel(outline, scale = 1) {
   return g;
 }
 
-const knifeGeo = new THREE.BoxGeometry(0.03, 0.06, 0.4);
-const knifeHandleGeo = new THREE.BoxGeometry(0.04, 0.05, 0.14);
+const grenadeGeo = new THREE.SphereGeometry(0.13, 12, 8);
+const pinGeo = new THREE.TorusGeometry(0.05, 0.012, 6, 12);
+const dotGeo = new THREE.SphereGeometry(0.05, 6, 4);
+
+/** Throw speed and blast for a given charge (0..1). */
+export function grenadeStats(power) {
+  return {
+    speed: 12 + 20 * power,
+    damage: 70 + 25 * power,
+    radius: 3.8 + 1.0 * power,
+  };
+}
+
+function grenadeModel(outline = 0.02) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(grenadeGeo, toonMat(0x4a5d23));
+  addOutline(body, outline);
+  g.add(body);
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.06, 8), toonMat(0x9aa3ad));
+  cap.position.y = 0.14;
+  g.add(cap);
+  const pin = new THREE.Mesh(pinGeo, toonMat(0xd0d4db));
+  pin.position.set(0.05, 0.17, 0);
+  g.add(pin);
+  return g;
+}
 
 export class GunslingerKit extends Kit {
   constructor(c) {
@@ -39,8 +67,10 @@ export class GunslingerKit extends Kit {
     this.ammo = MAG;
     this.reloading = 0;
     this.side = 1;
-    this.knives = MAX_KNIVES;
-    this.knifeT = 0;
+    this.grenades = MAX_GRENADES;
+    this.grenadeT = 0;
+    this.cook = null;
+    this.preview = null;
     this.bloom = 0;
     this.roll = null;
     this.lockTarget = null;
@@ -51,7 +81,9 @@ export class GunslingerKit extends Kit {
   onSpawn() {
     this.ammo = MAG;
     this.reloading = 0;
-    this.knives = MAX_KNIVES;
+    this.grenades = MAX_GRENADES;
+    this.cook = null;
+    this.clearPreview();
     this.roll = null;
     this.lockTarget = null;
   }
@@ -74,11 +106,11 @@ export class GunslingerKit extends Kit {
 
   update(dt, inp) {
     const c = this.c;
-    if (this.knives < MAX_KNIVES) {
-      this.knifeT += dt;
-      if (this.knifeT >= 4) {
-        this.knifeT = 0;
-        this.knives++;
+    if (this.grenades < MAX_GRENADES) {
+      this.grenadeT += dt;
+      if (this.grenadeT >= GRENADE_REGEN) {
+        this.grenadeT = 0;
+        this.grenades++;
       }
     }
     this.bloom = Math.max(0, this.bloom - dt * 5 * DEG);
@@ -97,7 +129,16 @@ export class GunslingerKit extends Kit {
       this.lockTarget = null;
       if (inp.fire && this.ready('shot') && this.ammo > 0 && this.reloading <= 0) this.shoot();
     }
-    if (inp.altPressed && this.knives > 0 && this.ready('knife')) this.throwKnife();
+    // RMB: hold to cook a grenade (longer hold = harder, bigger throw), release to throw
+    if (inp.alt && (this.cook || (this.grenades > 0 && this.ready('grenade')))) {
+      if (!this.cook) this.cook = { t: 0 };
+      this.cook.t = Math.min(1, this.cook.t + dt / COOK_TIME);
+      if (this.local) this.updatePreview(this.cook.t);
+    } else if (this.cook) {
+      this.throwGrenade(this.cook.t);
+      this.cook = null;
+      this.clearPreview();
+    }
   }
 
   startReload() {
@@ -108,7 +149,7 @@ export class GunslingerKit extends Kit {
 
   shoot() {
     const c = this.c;
-    this.cooldown('shot', 0.2);
+    this.cooldown('shot', FIRE_INTERVAL);
     this.ammo--;
     this.side = -this.side;
     const dir = applySpread(c.aim(_v), 0.35 * DEG + this.bloom);
@@ -189,35 +230,88 @@ export class GunslingerKit extends Kit {
     g.effects.flash(from, { color: 0xffe066, size: 0.16, life: 0.05 });
   }
 
-  throwKnife() {
+  grenadeLaunch() {
     const c = this.c;
-    this.cooldown('knife', 0.35);
-    this.knives--;
-    const from = c.eye().addScaledVector(rightFlat(c.yaw, _w), 0.15).addScaledVector(c.aim(_v), 0.4);
-    const aim = this.convergeDir(from);
-    const m = new THREE.Group();
-    const blade = new THREE.Mesh(knifeGeo, toonMat(0xe3e9f0));
-    addOutline(blade, 0.015);
-    blade.position.z = -0.12;
-    const handle = new THREE.Mesh(knifeHandleGeo, toonMat(0x2d2a3e));
-    addOutline(handle, 0.015);
-    handle.position.z = 0.14;
-    m.add(blade, handle);
-    this.game.projectiles.spawn({
+    const aim = c.aim(_v).clone();
+    const from = c.eye().addScaledVector(rightFlat(c.yaw, _w), 0.18).addScaledVector(aim, 0.45);
+    return { from, aim };
+  }
+
+  throwGrenade(power) {
+    const c = this.c;
+    const g = this.game;
+    this.cooldown('grenade', 0.5);
+    this.grenades--;
+    const st = grenadeStats(power);
+    const { from, aim } = this.grenadeLaunch();
+    const mesh = grenadeModel();
+    g.projectiles.spawn({
       owner: c,
       pos: from,
-      vel: aim.multiplyScalar(48).add(new THREE.Vector3(0, 1.5, 0)),
-      gravity: 9,
-      radius: 0.14,
-      damage: 60,
-      headMult: 2,
-      weapon: 'Throwing Knife',
-      mesh: m,
-      orient: true,
-      impactColor: 0xe3e9f0,
+      vel: aim.multiplyScalar(st.speed),
+      gravity: GRENADE_GRAVITY,
+      radius: 0.16,
+      damage: 0,
+      life: 3,
+      mesh,
+      spin: 8,
+      trail: 0xd9d4c7,
+      weapon: 'Grenade',
+      onHit: (p) => g.explode(p, st.radius, st.damage, c, { minMul: 0.3, knockOut: 8, knockUp: 6, weapon: 'Grenade' }),
     });
-    sfx.play('knife', { pos: c.pos, volume: 0.8 });
+    sfx.play('knife', { pos: c.pos, volume: 0.8, rate: 0.6 + power * 0.4 });
     c.model.triggerAttack('shoot', -1);
+    this.recoilL = 1;
+  }
+
+  /** Dotted arc + blast ring showing where the cooked grenade will land. */
+  updatePreview(power) {
+    const g = this.game;
+    if (!this.preview) {
+      const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, depthWrite: false });
+      const dots = [];
+      for (let i = 0; i < 26; i++) {
+        const d = new THREE.Mesh(dotGeo, mat);
+        g.scene.add(d);
+        dots.push(d);
+      }
+      this.preview = { dots, mat, ring: g.effects.marker(this.c.pos, 1, 0xffb703) };
+    }
+    const st = grenadeStats(power);
+    const { from, aim } = this.grenadeLaunch();
+    const p = from.clone();
+    const v = aim.multiplyScalar(st.speed);
+    const step = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    let landed = null;
+    let n = 0;
+    for (let i = 0; i < 120 && !landed; i++) {
+      const dt = 0.03;
+      v.y -= GRENADE_GRAVITY * dt;
+      step.copy(v).multiplyScalar(dt);
+      const len = step.length();
+      dir.copy(step).divideScalar(len);
+      const hit = g.world.raycast(p, dir, len);
+      if (hit) landed = hit.point;
+      else p.add(step);
+      if (i >= 4 && i % 3 === 0 && n < this.preview.dots.length) this.preview.dots[n++].position.copy(landed || p);
+    }
+    for (let i = 0; i < this.preview.dots.length; i++) this.preview.dots[i].visible = i < n;
+    const ring = this.preview.ring;
+    ring.group.visible = !!landed;
+    if (landed) {
+      ring.set(landed);
+      ring.group.scale.setScalar(st.radius);
+    }
+    this.preview.mat.color.setHex(power >= 1 ? 0xffb703 : 0xffffff);
+  }
+
+  clearPreview() {
+    if (!this.preview) return;
+    for (const d of this.preview.dots) d.removeFromParent();
+    this.preview.mat.dispose();
+    this.preview.ring.remove();
+    this.preview = null;
   }
 
   dodgeRoll(inp) {
@@ -257,13 +351,21 @@ export class GunslingerKit extends Kit {
   onDeath() {
     this.roll = null;
     this.lockTarget = null;
+    this.cook = null;
+    this.clearPreview();
+  }
+
+  dispose() {
+    this.clearPreview();
+    super.dispose();
   }
 
   hud() {
     return {
       ammo: this.c.superActive ? '∞' : this.reloading > 0 ? 'RELOADING' : `${this.ammo}`,
       ammoMax: MAG,
-      knives: this.knives,
+      grenades: this.grenades,
+      spin: this.cook ? this.cook.t : undefined,
       ability: { name: 'Roll', cd: this.cdLeft('roll'), max: 4 },
       lock: this.lockTarget,
       note: this.c.superActive ? 'CLICK AS FAST AS YOU CAN!' : null,
@@ -287,8 +389,13 @@ export class GunslingerKit extends Kit {
     const gl = revolverModel(0.006, 1.0);
     gl.position.set(-0.25, -0.23, -0.47);
     L.add(gl, vmArm(team, new THREE.Vector3(-0.25, -0.29, -0.44), -1));
+    const nade = grenadeModel(0.02);
+    nade.scale.setScalar(0.4);
+    nade.position.set(-0.26, -0.22, -0.5);
+    nade.visible = false;
+    L.add(nade);
     root.add(R, L);
-    root.userData = { R, L };
+    root.userData = { R, L, gl, nade };
     return root;
   }
 
@@ -307,5 +414,15 @@ export class GunslingerKit extends Kit {
     u.L.position.y = damp(u.L.position.y, y, 10, dt);
     u.R.rotation.z = damp(u.R.rotation.z, this.reloading > 0 ? -0.8 : 0, 10, dt);
     u.L.rotation.z = damp(u.L.rotation.z, this.reloading > 0 ? 0.8 : 0, 10, dt);
+    // cooking a grenade: left gun away, grenade drawn back further the harder you cook it
+    const cooking = !!this.cook;
+    u.gl.visible = !cooking;
+    u.nade.visible = cooking;
+    if (cooking) {
+      // wind up: draw the grenade back and to the side as the cook builds
+      u.L.position.x = -this.cook.t * 0.05;
+      u.L.position.y = 0.02 + this.cook.t * 0.04;
+      u.L.position.z = this.cook.t * 0.04;
+    } else u.L.position.x = 0;
   }
 }

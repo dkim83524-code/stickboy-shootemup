@@ -2,11 +2,14 @@ import * as THREE from 'three';
 import { Kit, boxMesh, cylMesh, vmArm } from './kit.js';
 import { sfx } from '../core/audio.js';
 import { applySpread, DEG, damp } from '../core/utils.js';
-import { BUILDS, buildBox, buildModel, Deployable } from '../entities/deployables.js';
+import { BUILDS, buildBox, buildModel, Deployable, MAX_TURRET_LEVEL } from '../entities/deployables.js';
 import { Drone } from '../entities/drone.js';
 
 const MAG = 6;
 const MAX_SCRAP = 250;
+const UPGRADE_COST = 25; // scrap per wrench hit on a full-health turret
+const UPGRADE_STEP = 34; // % progress per hit (3 hits per level)
+const REPAIR = 60;
 const _v = new THREE.Vector3();
 const _hits = [];
 
@@ -145,27 +148,82 @@ export class EngineerKit extends Kit {
     this.game.effects.flash(from, { color: 0xffd23f, size: 0.2, life: 0.06 });
   }
 
+  /** Your own build the crosshair is on, within wrench reach. */
+  buildInFront() {
+    const eye = this.c.eye();
+    const aim = this.c.aim(_v).clone();
+    let best = null;
+    let bd = 3.2;
+    for (const b of Object.values(this.builds)) {
+      if (!b || !b.alive) continue;
+      const to = b.center().sub(eye);
+      const d = to.length();
+      if (d > bd) continue;
+      if (d > 1.4 && to.divideScalar(d).dot(aim) < 0.6) continue;
+      bd = d;
+      best = b;
+    }
+    return best;
+  }
+
+  /**
+   * RMB wrench. On your own build: repair it if damaged; if it's a full-health turret,
+   * spend scrap to level it up. Otherwise it's a melee hit.
+   */
   swingWrench() {
     const c = this.c;
     const g = this.game;
-    this.cooldown('wrench', 0.6);
+    this.cooldown('wrench', 0.5);
     this.wrenchT = 0;
     c.model.triggerAttack('swing');
-    // repair own builds first
-    const eye = c.eye();
-    for (const b of Object.values(this.builds)) {
-      if (b && b.alive && b.center(_v).distanceTo(eye) < 3) {
-        b.repair(60);
+    const b = this.buildInFront();
+    if (b) {
+      if (b.hp < b.maxHp) {
+        b.repair(REPAIR);
         sfx.play('build', { pos: b.pos, volume: 0.8 });
-        g.effects.burst(b.center(), { count: 10, color: [0x7cff6b, 0xffffff], speed: 4, size: 0.08, life: 0.4 });
+        g.effects.burst(b.center(), { count: 12, color: [0x7cff6b, 0xffffff], speed: 4, size: 0.08, life: 0.4 });
         return;
       }
+      if (b.kind === 'turret' && b.level < MAX_TURRET_LEVEL) {
+        if (this.scrap < UPGRADE_COST) {
+          if (this.local) {
+            sfx.play('deny');
+            g.hud.notify(`NEED ${UPGRADE_COST} SCRAP TO UPGRADE`, 'warn');
+          }
+          return;
+        }
+        this.scrap -= UPGRADE_COST;
+        const leveled = b.addUpgrade(UPGRADE_STEP);
+        sfx.play('build', { pos: b.pos, volume: 0.9, rate: 1.3 });
+        g.effects.burst(b.center(), { count: 10, color: [0xffd23f, 0xffffff], speed: 4, size: 0.08, life: 0.4 });
+        if (leveled && this.local) g.hud.notify(`TURRET LEVEL ${b.level}${b.level === MAX_TURRET_LEVEL ? ' · ROCKETS ONLINE' : ''}`, 'good');
+        return;
+      }
+      sfx.play('punch', { pos: b.pos, volume: 0.4, rate: 2 });
+      return;
     }
     const targets = g.meleeSweep(c, 2.7, 60);
     if (targets.length) {
       g.damage(targets[0], 40, c, { weapon: 'Wrench', dir: c.aim(_v).clone() });
       sfx.play('punch', { pos: c.pos, volume: 0.9, rate: 1.3 });
     } else sfx.play('swing', { pos: c.pos, volume: 0.6 });
+  }
+
+  /** Called by scrap pickups; returns false when already full. */
+  collectScrap(amount) {
+    if (this.scrap >= MAX_SCRAP) return false;
+    this.scrap = Math.min(MAX_SCRAP, this.scrap + amount);
+    return true;
+  }
+
+  /** What RMB would do to the build in front of you (for the HUD hint). */
+  wrenchHint() {
+    const b = this.buildInFront();
+    if (!b) return null;
+    if (b.hp < b.maxHp) return `RMB: REPAIR ${b.name.toUpperCase()}`;
+    if (b.kind === 'turret' && b.level < MAX_TURRET_LEVEL) return `RMB: UPGRADE TURRET LV${b.level} → ${b.level + 1} (${Math.round(b.upgrade)}%, ${UPGRADE_COST} SCRAP)`;
+    if (b.kind === 'turret') return 'TURRET AT MAX LEVEL';
+    return null;
   }
 
   // ------------------------------------------------------------------ building
@@ -309,6 +367,7 @@ export class EngineerKit extends Kit {
       buildMode: this.buildMode,
       ability: { name: this.buildMode ? 'Exit Build' : 'Build', cd: 0, max: 1 },
       drone: this.drone ? { hp: this.drone.hp / this.drone.maxHp, time: this.c.superTime, boosting: this.drone.boosting } : null,
+      note: !this.drone && !this.buildMode && this.local ? this.wrenchHint() : null,
     };
   }
 

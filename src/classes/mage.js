@@ -6,23 +6,22 @@ import { clamp } from '../core/utils.js';
 
 export const SPELLS = [
   { id: 'bolt', name: 'Arcane Bolt', cost: 6, cd: 0.28, color: 0xc77dff },
-  { id: 'mend', name: 'Mend', cost: 25, cd: 2.5, color: 0x7cff6b },
-  { id: 'ward', name: 'Arcane Ward', cost: 35, cd: 8, color: 0x5ec8ff },
+  { id: 'mend', name: 'Healing Circle', cost: 30, cd: 4, color: 0x7cff6b },
+  { id: 'poison', name: 'Poison Pool', cost: 35, cd: 8, color: 0x9bff3b },
   { id: 'meteor', name: 'Meteor', cost: 100, cd: 0, color: 0xff7b00 },
 ];
 const MAX_MANA = 100;
 const CHANNEL_TIME = 3;
-const MEND_HEAL = 55;
-const WARD_RADIUS = 5.5;
-const WARD_TIME = 5;
-const WARD_DPS = 24;
-const WARD_HPS = 20;
+const HEAL_AMOUNT = 45;
+const HEAL_RADIUS = 7;
+const POISON_RADIUS = 4.5;
+const POISON_TIME = 6;
+const POISON_DPS = 22;
+const POISON_RANGE = 35;
 const _v = new THREE.Vector3();
 
 const boltGeo = new THREE.SphereGeometry(0.2, 12, 8);
 const rockGeo = new THREE.IcosahedronGeometry(1.3, 0);
-const wardGeo = new THREE.SphereGeometry(1, 32, 16);
-const wardWire = new THREE.IcosahedronGeometry(1, 2);
 
 export class MageKit extends Kit {
   constructor(c) {
@@ -31,7 +30,7 @@ export class MageKit extends Kit {
     this.slot = 0;
     this.regenPause = 0;
     this.channel = null;
-    this.ward = null;
+    this.aimMarker = null;
     this.castT = 9;
   }
 
@@ -39,7 +38,6 @@ export class MageKit extends Kit {
     this.mana = MAX_MANA;
     this.slot = 0;
     this.cancelChannel();
-    this.endWard();
     this.updateWandColor();
   }
 
@@ -66,7 +64,7 @@ export class MageKit extends Kit {
   update(dt, inp) {
     const c = this.c;
     if (this.time > this.regenPause && !this.channel) this.mana = Math.min(MAX_MANA, this.mana + 11 * dt);
-    if (this.ward) this.updateWard(dt);
+    this.updateAimMarker();
 
     if (this.channel) {
       if (c.isStunned()) {
@@ -109,8 +107,7 @@ export class MageKit extends Kit {
     }
     if (!this.ready(s.id)) return this.deny(pressed);
     if (this.mana < s.cost) return this.deny(pressed);
-    if (s.id === 'mend' && c.hp >= c.maxHp) return this.deny(pressed, 'ALREADY AT FULL HEALTH');
-    if (s.id === 'ward' && this.ward) return this.deny(pressed);
+    if (s.id === 'mend' && !this.healTargets().some((o) => o.hp < o.maxHp)) return this.deny(pressed, 'NOBODY NEEDS HEALING');
     this.mana -= s.cost;
     this.regenPause = this.time + 0.5;
     this.cooldown('cast', s.id === 'bolt' ? s.cd : 0.35);
@@ -120,7 +117,7 @@ export class MageKit extends Kit {
     this.kick(0.4);
     if (s.id === 'bolt') this.castBolt();
     else if (s.id === 'mend') this.castMend();
-    else if (s.id === 'ward') this.castWard();
+    else if (s.id === 'poison') this.castPoison();
   }
 
   projectileMesh(geo, color) {
@@ -148,75 +145,69 @@ export class MageKit extends Kit {
     sfx.play('bolt', { pos: c.pos, volume: 0.7 });
   }
 
-  /** Spell 2: heal yourself. */
+  /** You plus every living ally inside the healing circle. */
+  healTargets() {
+    const c = this.c;
+    return this.game.characters.filter(
+      (o) => o.alive && o.team === c.team && (o === c || (o.pos.distanceTo(c.pos) <= HEAL_RADIUS && Math.abs(o.pos.y - c.pos.y) < 3)),
+    );
+  }
+
+  /** Spell 2: a pulse that heals you and every ally in a circle around you. */
   castMend() {
     const c = this.c;
-    this.game.heal(c, MEND_HEAL, c);
-    this.game.effects.burst(c.chest(), { count: 22, color: [0x7cff6b, 0xffffff], speed: 4, size: 0.1, life: 0.7, gravity: -4 });
-    this.game.effects.ring(c.pos, { color: 0x7cff6b, radius: 1.8, life: 0.4 });
+    const g = this.game;
+    for (const o of this.healTargets()) {
+      if (g.heal(o, HEAL_AMOUNT, c) > 0) g.effects.burst(o.chest(), { count: 14, color: [0x7cff6b, 0xffffff], speed: 3, size: 0.1, life: 0.7, gravity: -4 });
+    }
+    g.effects.ring(c.pos, { color: 0x7cff6b, radius: HEAL_RADIUS, life: 0.55 });
+    g.effects.ring(c.pos, { color: 0xffffff, radius: HEAL_RADIUS * 0.6, life: 0.4 });
     sfx.play('heal', { pos: c.pos, volume: 0.8 });
   }
 
-  /** Spell 3: a force field that follows you, heals allies inside and hurts enemies inside. */
-  castWard() {
+  /** Where Poison Pool would land: the surface the crosshair is on, within range. */
+  poisonTarget(out = new THREE.Vector3()) {
     const c = this.c;
-    const g = this.game;
-    const group = new THREE.Group();
-    const shellMat = new THREE.MeshBasicMaterial({ color: 0x5ec8ff, transparent: true, opacity: 0.1, depthWrite: false, side: THREE.DoubleSide });
-    const wireMat = new THREE.MeshBasicMaterial({ color: 0xbff4ff, transparent: true, opacity: 0.35, wireframe: true, depthWrite: false });
-    const shell = new THREE.Mesh(wardGeo, shellMat);
-    const wire = new THREE.Mesh(wardWire, wireMat);
-    group.add(shell, wire);
-    group.scale.setScalar(WARD_RADIUS);
-    g.scene.add(group);
-    const marker = g.effects.marker(c.pos, WARD_RADIUS, 0x5ec8ff);
-    this.ward = { until: this.time + WARD_TIME, tick: 0, group, wire, shellMat, wireMat, marker };
-    g.effects.ring(c.pos, { color: 0x5ec8ff, radius: WARD_RADIUS, life: 0.4 });
-    sfx.play('cast', { pos: c.pos, volume: 0.7, rate: 1.6 });
+    const eye = c.eye();
+    const aim = c.aim(_v);
+    const hit = this.game.world.raycast(eye, aim, POISON_RANGE);
+    if (hit && hit.normal.y > 0.5) return out.copy(hit.point);
+    const p = hit ? hit.point.clone().addScaledVector(hit.normal, 0.5) : eye.clone().addScaledVector(aim, POISON_RANGE);
+    return out.set(p.x, this.game.world.groundHeight(p.x, p.z, p.y), p.z);
   }
 
-  updateWard(dt) {
-    const w = this.ward;
+  /** Spell 3: area control. A poison pool that damages enemies standing in it. */
+  castPoison() {
     const c = this.c;
     const g = this.game;
-    const left = w.until - this.time;
-    if (left <= 0 || !c.alive) {
-      this.endWard();
+    const p = this.poisonTarget();
+    g.addZone({
+      pos: p,
+      radius: POISON_RADIUS,
+      dps: POISON_DPS,
+      time: POISON_TIME,
+      owner: c,
+      weapon: 'Poison Pool',
+      color: 0x7bd12f,
+      particles: [0x9bff3b, 0x5a8f1f, 0xd4ff8a],
+    });
+    g.effects.burst(p.clone().setY(p.y + 0.3), { count: 26, color: [0x9bff3b, 0x5a8f1f], speed: 5, size: 0.14, life: 0.6, gravity: 4 });
+    g.effects.ring(p, { color: 0x9bff3b, radius: POISON_RADIUS, life: 0.4 });
+    sfx.play('frost', { pos: p, volume: 0.8, rate: 0.6 });
+  }
+
+  /** Local player with Poison Pool selected sees where it will land. */
+  updateAimMarker() {
+    const show = this.local && this.c.alive && this.slot === 2 && !this.channel;
+    if (!show) {
+      if (this.aimMarker) {
+        this.aimMarker.remove();
+        this.aimMarker = null;
+      }
       return;
     }
-    w.group.position.set(c.pos.x, c.pos.y + 0.8, c.pos.z);
-    w.marker.set(c.pos);
-    w.wire.rotation.y += dt * 0.8;
-    const fade = Math.min(1, left / 0.5) * (this.local && this.game.cameraMode === 'first' ? 0.4 : 1);
-    w.shellMat.opacity = 0.1 * fade;
-    w.wireMat.opacity = (0.28 + Math.sin(this.time * 8) * 0.07) * fade;
-    w.tick -= dt;
-    if (w.tick > 0) return;
-    w.tick = 0.25;
-    for (const o of g.characters) {
-      if (!o.alive || o === c) continue;
-      const dx = o.pos.x - c.pos.x;
-      const dz = o.pos.z - c.pos.z;
-      const d = Math.hypot(dx, dz);
-      if (d > WARD_RADIUS || Math.abs(o.pos.y - c.pos.y) > 3) continue;
-      if (o.team === c.team) {
-        if (g.heal(o, WARD_HPS * 0.25, c) > 0) g.effects.burst(o.chest(), { count: 2, color: 0x7cff6b, speed: 2, size: 0.08, life: 0.5, gravity: -3 });
-      } else {
-        const n = d > 0.01 ? _v.set(dx / d, 0, dz / d) : _v.set(1, 0, 0);
-        g.damage(o, WARD_DPS * 0.25, c, { weapon: 'Arcane Ward', dir: n.clone(), knock: n.clone().multiplyScalar(3.5).setY(1.5) });
-        g.effects.burst(o.chest(), { count: 3, color: [0x5ec8ff, 0xffffff], speed: 3, size: 0.08, life: 0.3 });
-      }
-    }
-  }
-
-  endWard() {
-    const w = this.ward;
-    if (!w) return;
-    this.ward = null;
-    w.group.removeFromParent();
-    w.shellMat.dispose();
-    w.wireMat.dispose();
-    w.marker.remove();
+    if (!this.aimMarker) this.aimMarker = this.game.effects.marker(this.c.pos, POISON_RADIUS, 0x9bff3b);
+    this.aimMarker.set(this.poisonTarget());
   }
 
   blink() {
@@ -350,12 +341,13 @@ export class MageKit extends Kit {
 
   onDeath() {
     this.cancelChannel(true);
-    this.endWard();
+    this.updateAimMarker();
   }
 
   dispose() {
     this.cancelChannel();
-    this.endWard();
+    if (this.aimMarker) this.aimMarker.remove();
+    this.aimMarker = null;
     super.dispose();
   }
 
@@ -368,7 +360,7 @@ export class MageKit extends Kit {
         cost: s.cost,
         key: i + 1,
         selected: i === this.slot,
-        cd: s.id === 'ward' && this.ward ? this.ward.until - this.time : this.cdLeft(s.id),
+        cd: this.cdLeft(s.id),
         ok: this.mana >= s.cost - 0.01 && (s.id === 'meteor' || this.ready(s.id)),
       })),
       ability: { name: 'Blink', cd: this.cdLeft('blink'), max: 1.2, cost: 22 },

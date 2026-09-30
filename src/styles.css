@@ -689,6 +689,14 @@ body {
 .pip.on {
   background: #e3e9f0;
 }
+.pip.nade {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+}
+.pip.nade.on {
+  background: #6b8e23;
+}
 .cloakbar {
   display: inline-block;
   width: 110px;
@@ -740,6 +748,25 @@ body {
 }
 .nametag.ally {
   color: #bcd6ff;
+}
+.nametag.turret .hb {
+  width: 64px;
+  height: 7px;
+}
+.nametag.turret.ally .hb i {
+  background: #3fcf3a;
+}
+.nametag .ub {
+  width: 64px;
+  height: 4px;
+  margin: 2px auto 0;
+  border: 1.5px solid var(--ink);
+  background: #3b3645;
+}
+.nametag .ub i {
+  display: block;
+  height: 100%;
+  background: #ffd23f;
 }
 
 /* death */

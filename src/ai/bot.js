@@ -7,7 +7,7 @@ const DIFFICULTY = {
   hard: { react: 0.24, aimErr: 1.3 * DEG, turn: 11, track: 13, headChance: 0.4, jumpy: 0.4, fov: 80 * DEG },
 };
 
-const PROJECTILE_SPEED = { mage: 65, gunslingerKnife: 48 };
+
 const _v = new THREE.Vector3();
 const _w = new THREE.Vector3();
 const _f = new THREE.Vector3();
@@ -57,6 +57,8 @@ export class BotBrain {
     this.lastHurtAt = -99;
     this.lastHurtBy = null;
     this.wantMove = false;
+    this.nade = null;
+    this.poisonUntil = 0;
   }
 
   onDamaged(attacker) {
@@ -80,7 +82,7 @@ export class BotBrain {
     inp.jump = inp.jumpPressed = false;
     inp.fire = inp.firePressed = false;
     inp.alt = inp.altPressed = false;
-    inp.ability = inp.abilityPressed = false;
+    inp.ability = inp.abilityPressed = inp.itemPressed = false;
     inp.superPressed = inp.reloadPressed = inp.descend = false;
     inp.slot = 0;
     inp.wheel = 0;
@@ -323,7 +325,8 @@ export class BotBrain {
       this.ambush(dt);
       return;
     }
-    if (cls === 'mage' && this.mageSupport(false)) return;
+    if (cls === 'mage' && this.mageSupport()) return;
+    if (cls === 'engineer' && this.engineerMaintain()) return;
 
     // chase recent intel
     if (this.lastKnown && this.time - this.lastKnownAt < 6) {
@@ -425,7 +428,7 @@ export class BotBrain {
     const err = this.aimAt(this.aimPoint(t));
     if (dist < 30) inp.alt = true;
     if (this.canFire(err, dist, 1.4)) inp.fire = true;
-    if (dist > 4 && dist < 9 && err < 10 * DEG && c.kit.ready('charge') && Math.random() < 0.05) inp.abilityPressed = true;
+    if (dist > 5 && dist < 18 && err < 8 * DEG && c.kit.ready('charge') && Math.random() < 0.04) inp.abilityPressed = true;
   }
 
   fightMage(t, dist) {
@@ -450,30 +453,85 @@ export class BotBrain {
       return;
     }
     this.strafeAround(t, dist, [9, 26]);
-    const support = this.mageSupport(dist < 8);
-    const err = this.aimAt(this.aimPoint(t, { lead: 70 }));
-    if (support) return;
+    if (this.mageSupport()) {
+      this.aimAt(this.aimPoint(t, { lead: 70 }));
+      return;
+    }
+    // Poison Pool at the target's feet now and then
+    const poisoning = this.poisonUntil > this.time;
+    if (poisoning || (kit.mana >= 45 && kit.ready('poison') && dist < 30 && Math.random() < 0.02)) {
+      if (!poisoning) this.poisonUntil = this.time + 0.8;
+      inp.slot = 3;
+      const perr = this.aimAt(this.aimPoint(t, { feet: true }));
+      if (kit.slot === 2 && perr < 4 * DEG) {
+        inp.fire = inp.firePressed = true;
+        this.poisonUntil = 0;
+      }
+      return;
+    }
     inp.slot = 1;
+    const err = this.aimAt(this.aimPoint(t, { lead: 70 }));
     if (this.canFire(err, dist, 1.2) && kit.slot === 0) inp.fire = true;
   }
 
-  /** Mend when hurt, Ward when enemies are close or allies nearby are hurt. Returns true if casting. */
-  mageSupport(enemyClose) {
+  /** Healing Circle when the Mage or a nearby ally is hurt. Returns true while casting it. */
+  mageSupport() {
     const c = this.c;
     const inp = c.input;
     const kit = c.kit;
-    let pick = 0;
-    if (c.hp < c.maxHp * 0.55 && kit.mana >= 25 && kit.ready('mend')) pick = 2;
-    else if (!kit.ward && kit.mana >= 35 && kit.ready('ward')) {
-      const alliesHurt = this.game.characters.some(
-        (o) => o.alive && o !== c && o.team === c.team && o.hp < o.maxHp * 0.7 && o.pos.distanceTo(c.pos) < 5,
-      );
-      if (enemyClose || alliesHurt) pick = 3;
-    }
-    if (!pick) return false;
-    inp.slot = pick;
-    if (kit.slot === pick - 1) inp.fire = inp.firePressed = true;
+    if (kit.mana < 30 || !kit.ready('mend')) return false;
+    const hurt = this.game.characters.some(
+      (o) => o.alive && o.team === c.team && o.hp < o.maxHp * 0.6 && (o === c || o.pos.distanceTo(c.pos) < 7),
+    );
+    if (!hurt) return false;
+    inp.slot = 2;
+    if (kit.slot === 1) inp.fire = inp.firePressed = true;
     return true;
+  }
+
+  /**
+   * Aim a lobbed throw (speed v, gravity g) at `target`: tries the flat arc, then the high
+   * lob if the flat one clips a wall. Returns false if neither gets there.
+   */
+  lobAt(target, v, g) {
+    const c = this.c;
+    const eye = c.eye(new THREE.Vector3());
+    const dx = target.x - eye.x;
+    const dz = target.z - eye.z;
+    const x = Math.hypot(dx, dz);
+    const y = target.y - eye.y;
+    const v2 = v * v;
+    const disc = v2 * v2 - g * (g * x * x + 2 * y * v2);
+    if (disc < 0 || x < 0.5) return false;
+    const yaw = yawTo(dx, dz);
+    for (const pitch of [Math.atan((v2 - Math.sqrt(disc)) / (g * x)), Math.atan((v2 + Math.sqrt(disc)) / (g * x))]) {
+      if (this.arcLands(eye, yaw, pitch, v, g, target)) {
+        c.yaw = yaw;
+        c.pitch = pitch;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  arcLands(from, yaw, pitch, v, g, target) {
+    const world = this.game.world;
+    const p = from.clone();
+    const vel = dirFromYawPitch(yaw, pitch, new THREE.Vector3()).multiplyScalar(v);
+    const seg = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    for (let i = 0; i < 120; i++) {
+      const dt = 0.04;
+      vel.y -= g * dt;
+      seg.copy(vel).multiplyScalar(dt);
+      const len = seg.length();
+      dir.copy(seg).divideScalar(len);
+      const hit = world.raycast(p, dir, len);
+      if (hit) return hit.point.distanceTo(target) < 2.2;
+      p.add(seg);
+      if (p.distanceTo(target) < 1) return true;
+    }
+    return false;
   }
 
   /** Stalk is a toggle on E; press it only when the state needs to change. */
@@ -490,6 +548,15 @@ export class BotBrain {
     const inp = c.input;
     const kit = c.kit;
     if (c.superCharge >= 100 && !c.superActive && Math.random() < 0.1) inp.superPressed = true;
+    // pearl up to rooftop targets (and snipers anywhere) instead of walking the long way
+    const horiz = Math.hypot(t.pos.x - c.pos.x, t.pos.z - c.pos.z);
+    if (!c.superActive && kit.ready('pearl') && horiz > 10 && horiz < 40 && (t.classId === 'sniper' || t.pos.y > c.pos.y + 2.5) && Math.random() < 0.05) {
+      const behindT = t.forward(new THREE.Vector3()).multiplyScalar(-1.5).add(t.pos);
+      if (this.lobAt(behindT.setY(t.pos.y + 0.3), 30, 18)) {
+        inp.itemPressed = true;
+        return;
+      }
+    }
     const err = this.aimAt(this.aimPoint(t));
     const behind = kit.isBehind(t);
     const spotted = this.time - this.lastHurtAt < 1.5;
@@ -577,6 +644,41 @@ export class BotBrain {
     return ok;
   }
 
+  /** Engineer upkeep between fights: grab scrap, repair and level up the turret. */
+  engineerMaintain() {
+    const c = this.c;
+    const g = this.game;
+    const kit = c.kit;
+    if (kit.drone) return false;
+    if (kit.scrap < 240) {
+      let best = null;
+      let bd = 18;
+      for (const p of g.pickups) {
+        const d = Math.hypot(p.mesh.position.x - c.pos.x, p.mesh.position.z - c.pos.z);
+        if (d < bd && Math.abs(p.y - c.pos.y) < 2) {
+          bd = d;
+          best = p;
+        }
+      }
+      if (best) {
+        this.moveTo(best.mesh.position);
+        return true;
+      }
+    }
+    const tur = kit.builds.turret;
+    if (!tur || !tur.alive) return false;
+    if (!(tur.hp < tur.maxHp || (tur.level < 3 && kit.scrap >= 25))) return false;
+    const d = Math.hypot(tur.pos.x - c.pos.x, tur.pos.z - c.pos.z);
+    if (d > 25) return false;
+    if (d > 2) {
+      this.moveTo(tur.pos);
+      return true;
+    }
+    this.aimAt(tur.center());
+    if (kit.ready('wrench')) c.input.alt = true;
+    return true;
+  }
+
   fightGunslinger(t, dist) {
     const c = this.c;
     const inp = c.input;
@@ -592,12 +694,21 @@ export class BotBrain {
       return;
     }
     this.strafeAround(t, dist, [7, 20]);
-    const knife = kit.knives > 0 && dist > 5 && dist < 22 && Math.random() < 0.015;
-    const err = this.aimAt(this.aimPoint(t, { lead: knife ? PROJECTILE_SPEED.gunslingerKnife : 0 }));
-    if (this.canFire(err, dist)) {
-      if (knife) inp.altPressed = true;
-      else inp.fire = true;
+    // cook a grenade just long enough to reach the target, then release
+    if (!this.nade && kit.grenades > 0 && kit.ready('grenade') && dist > 7 && dist < 30 && Math.random() < 0.012) {
+      const horiz = Math.hypot(t.pos.x - c.pos.x, t.pos.z - c.pos.z);
+      const v = clamp(Math.sqrt(20 * horiz * 1.15), 12, 32);
+      const power = (v - 12) / 20;
+      this.nade = { until: this.time + power * 1.1 + 0.05, v };
     }
+    if (this.nade) {
+      if (!this.lobAt(t.pos.clone().setY(t.pos.y + 0.3), this.nade.v, 20)) this.aimAt(this.aimPoint(t));
+      if (this.time < this.nade.until) inp.alt = true;
+      else this.nade = null;
+      return;
+    }
+    const err = this.aimAt(this.aimPoint(t));
+    if (this.canFire(err, dist)) inp.fire = true;
     if (this.time - this.lastHurtAt < 0.3 && kit.ready('roll') && Math.random() < 0.25) inp.abilityPressed = true;
   }
 

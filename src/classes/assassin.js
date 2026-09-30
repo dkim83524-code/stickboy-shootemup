@@ -1,20 +1,26 @@
 import * as THREE from 'three';
 import { Kit, boxMesh, cylMesh, vmArm } from './kit.js';
 import { sfx } from '../core/audio.js';
-import { toonGradient } from '../core/toon.js';
+import { toonGradient, addOutline } from '../core/toon.js';
 import { forwardFlat, yawTo, damp } from '../core/utils.js';
 
 const CLOAK_TIME = 1.5; // standing still this long cloaks you
 const STALK_CLOAK_DELAY = 0.5; // crouch-stalking cloaks you after this long
-const LUNGE_CD = 3;
+const LUNGE_CD = 1.5;
+const PEARL_CD = 5;
+const PEARL_SPEED = 30;
+const PEARL_GRAVITY = 18;
 const STRIKE_RANGE = 60; // Shadow Strike teleport range
 const _v = new THREE.Vector3();
 const _f = new THREE.Vector3();
 const _hits = [];
+const pearlGeo = new THREE.SphereGeometry(0.14, 12, 8);
 
 /*
  * Assassin
  * - LMB katana slash, RMB dash-slash lunge (both follow the backstab rules)
+ * - F throws a shadow pearl; you teleport wherever it lands. Throwing and teleporting
+ *   never break the cloak, which is how the Assassin reaches rooftop snipers.
  * - E toggles Stalk: crouch, move at half speed, and stay cloaked while moving
  * - Standing still for 1.5s also cloaks
  * - Backstab rules: cloaked → always kills; uncloaked → first hit takes 75% of max HP
@@ -79,6 +85,10 @@ export class AssassinKit extends Kit {
 
     if (inp.fire && this.ready('slash')) this.slash();
     else if (inp.altPressed && this.ready('lunge')) this.lunge();
+    if (inp.itemPressed) {
+      if (this.ready('pearl')) this.throwPearl();
+      else if (this.local) sfx.play('deny');
+    }
 
     if (this.revealed) {
       this.setCloak(false);
@@ -213,6 +223,55 @@ export class AssassinKit extends Kit {
     };
   }
 
+  // ------------------------------------------------------------------ shadow pearl
+  /** F: throw a pearl in an arc and teleport to where it lands. Keeps you cloaked. */
+  throwPearl() {
+    const c = this.c;
+    const g = this.game;
+    this.cooldown('pearl', PEARL_CD);
+    const aim = c.aim(_v).clone();
+    const from = c.eye().addScaledVector(aim, 0.5);
+    const mesh = new THREE.Mesh(pearlGeo, new THREE.MeshBasicMaterial({ color: 0x5b2bb5 }));
+    addOutline(mesh, 0.03);
+    g.projectiles.spawn({
+      owner: c,
+      pos: from,
+      vel: aim.multiplyScalar(PEARL_SPEED),
+      gravity: PEARL_GRAVITY,
+      radius: 0.15,
+      damage: 0,
+      life: 5,
+      mesh,
+      trail: [0x6a5acd, 0x2d2a3e],
+      weapon: 'Pearl',
+      onHit: (p, hit) => this.pearlLand(p, hit),
+    });
+    this.pearlT = 0;
+    sfx.play('knife', { pos: c.pos, volume: c.cloaked ? 0.35 : 0.7, rate: 0.7 });
+  }
+
+  pearlLand(p, hit) {
+    const c = this.c;
+    const g = this.game;
+    if (!c.alive) return;
+    const target = p.clone();
+    if (hit && hit.normal) target.addScaledVector(hit.normal, 0.45);
+    if (hit && hit.target && hit.target.isCharacter) target.copy(hit.target.pos).setY(hit.target.pos.y + 0.3);
+    const spot = this.freeSpot(target);
+    if (!spot) {
+      g.effects.burst(p, { count: 10, color: [0x6a5acd, 0x2d2a3e], speed: 3, size: 0.08, life: 0.4 });
+      if (this.local) sfx.play('deny');
+      return;
+    }
+    g.effects.burst(c.chest(), { count: 18, color: [0x6a5acd, 0x2d2a3e], speed: 4, size: 0.1, life: 0.5, gravity: 0 });
+    c.pos.copy(spot);
+    c.vel.set(0, 0, 0);
+    c.forced = null;
+    c.grounded = true;
+    g.effects.burst(c.chest(), { count: 18, color: [0x6a5acd, 0x2d2a3e], speed: 4, size: 0.1, life: 0.5, gravity: 0 });
+    sfx.play('blink', { pos: c.pos, volume: c.cloaked ? 0.35 : 0.8, rate: 0.8 });
+  }
+
   // ------------------------------------------------------------------ Shadow Strike
   /** Free spot just behind `t`, or null. */
   behindSpot(t) {
@@ -333,6 +392,7 @@ export class AssassinKit extends Kit {
       cloak: c.cloaked ? 1 : this.stalking ? Math.min(1, this.stalkT / STALK_CLOAK_DELAY) : Math.min(1, this.stillTime / CLOAK_TIME),
       cloaked: c.cloaked,
       lunge: this.cdLeft('lunge'),
+      pearl: this.cdLeft('pearl'),
       note,
     };
   }
